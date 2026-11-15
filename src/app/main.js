@@ -654,8 +654,12 @@ function init() {
   const pick = (input) => { input.value = ''; input.click(); };
   $('btn-folder').addEventListener('click', (e) => { e.stopPropagation(); pick($('in-folder')); });
   $('btn-files').addEventListener('click', (e) => { e.stopPropagation(); pick($('in-files')); });
-  drop.addEventListener('click', () => pick($('in-files')));
-  drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick($('in-files')); } });
+  // Clicking the box itself opens the FOLDER chooser: a CT study is a folder, and a file dialog (macOS in particular)
+  // cannot select one. Loose files and zips go through the "Choose files or .zip" button.
+  // (The hidden inputs live inside the box, so their own programmatic click bubbles up to it: ignore those, or a
+  // second chooser would open on top of the one the buttons asked for.)
+  drop.addEventListener('click', (e) => { if (!e.target.closest('input, button')) pick($('in-folder')); });
+  drop.addEventListener('keydown', (e) => { if (e.target === drop && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick($('in-folder')); } });
   $('in-folder').addEventListener('change', (e) => startScan([...e.target.files]));
   $('in-files').addEventListener('change', (e) => startScan([...e.target.files]));
 

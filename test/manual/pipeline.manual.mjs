@@ -17,6 +17,7 @@ const tPrep = performance.now() - t;
 const a = analyze(work);
 const p = defaultParams(work, a);
 if ('keepVessels' in flags) p.dropVessels = false;
+if ('nopegs' in flags) p.joinParts = false;
 if (flags.threshold) p.threshold = Number(flags.threshold);
 console.log(`${args[0].split('/').pop()}: grid ${work.dims} @${work.voxel} mm, prepare ${tPrep.toFixed(0)} ms, focus ${JSON.stringify(work.focus)}`);
 console.log(`  analysis: threshold ${a.threshold}  softPeak ${a.softPeak} sigma ${a.softSigma} otsu ${a.otsu} metal ${a.hasMetal} | ${a.notes.join(' | ')}`);

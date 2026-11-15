@@ -143,8 +143,8 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .viewer-hint { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; color: var(--faint); font-size: 12.5px; pointer-events: none; z-index: 2; padding: 0 12px; }
 .progress { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); width: min(340px, 70%); z-index: 4; background: rgba(21,26,33,.9); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 8px; font-size: 13px; color: var(--muted); text-align: center; }
 .progress .bar { margin-bottom: 6px; }
-.part-menu { position: absolute; z-index: 6; background: #232b37; border: 1px solid #44536a; border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5); min-width: 170px; }
-.part-title { font-size: 12.5px; color: var(--muted); padding: 0 2px 2px; }
+.part-menu { position: absolute; z-index: 6; left: 50%; bottom: 40px; transform: translateX(-50%); background: #232b37; border: 1px solid var(--accent); border-radius: 12px; padding: 8px 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; box-shadow: 0 10px 30px rgba(0,0,0,.5); max-width: calc(100% - 24px); }
+.part-title { font-size: 13px; color: var(--text); padding: 0 4px; }
 .statsbar { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 9px 16px; border-top: 1px solid var(--line); background: var(--bg-2); font-size: 13px; color: var(--muted); min-height: 40px; align-items: center; }
 .statsbar b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .statsbar .good { color: var(--ok); }

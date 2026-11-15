@@ -19,7 +19,7 @@ export class Viewer {
     this.scale = 1;
     this.mesh = null;
     this.vertexPart = null;
-    this.highlight = -1;
+    this.highlight = new Set(); // part ids drawn in the selection colour
     this.firstFrame = true;
 
     const renderer = new WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
@@ -142,13 +142,17 @@ export class Viewer {
     }
     this.mesh = new Mesh(geometry, this.material);
     this.root.add(this.mesh);
-    this.highlight = -1;
+    this.highlight = new Set();
     this.paint();
     this.layout();
+    const size = geometry.boundingBox.getSize(new Vector3()).length();
     if (this.firstFrame || !keepCamera) {
       this.firstFrame = false;
       this.setView('front');
+    } else if (this.lastSize && (size < this.lastSize * 0.7 || size > this.lastSize * 1.4)) {
+      this.refit(); // the model changed extent (pieces removed / isolated): re-frame, same viewing direction
     }
+    this.lastSize = size;
     this.requestRender();
   }
 
@@ -180,16 +184,15 @@ export class Viewer {
     const hl = this.highlight;
     for (let v = 0, n = arr.length / 3; v < n; v++) {
       const p = part ? part[v] : 1;
-      const c = p === hl ? PICK : p === 0 ? PEG : BONE;
+      const c = hl.has(p) ? PICK : p === 0 ? PEG : BONE;
       arr[3 * v] = c[0]; arr[3 * v + 1] = c[1]; arr[3 * v + 2] = c[2];
     }
     colors.needsUpdate = true;
     this.requestRender();
   }
 
-  setHighlight(partId) {
-    if (this.highlight === partId) return;
-    this.highlight = partId;
+  setHighlight(partIds) {
+    this.highlight = new Set(partIds || []);
     this.paint();
   }
 
@@ -213,6 +216,23 @@ export class Viewer {
     let id = ids[0] === ids[1] || ids[0] === ids[2] ? ids[0] : ids[1] === ids[2] ? ids[1] : ids[0];
     if (id === 0) id = ids.find((x) => x !== 0) || 0;
     this.onPick({ partId: id, clientX: event.clientX, clientY: event.clientY });
+  }
+
+  // Re-centre and re-zoom on the model without changing the viewing direction.
+  refit() {
+    if (!this.mesh) return;
+    const box = new Box3().setFromObject(this.mesh);
+    const centre = box.getCenter(new Vector3());
+    const radius = Math.max(20, box.getSize(new Vector3()).length() / 2);
+    const dist = (radius / Math.sin((this.camera.fov * Math.PI) / 360)) * 1.05;
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    this.camera.position.copy(centre).addScaledVector(dir, dist);
+    this.camera.near = Math.max(0.5, dist / 200);
+    this.camera.far = dist * 20 + 2000;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(centre);
+    this.controls.update();
+    this.requestRender();
   }
 
   // Patient-based views: x = patient left, y = posterior, z = head.

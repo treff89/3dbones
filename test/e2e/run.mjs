@@ -26,7 +26,8 @@ function walk(dir, list = []) {
 }
 const files = statSync(input).isDirectory() ? walk(input) : [input];
 
-const { server, url } = await serve('dist');
+// --url=https://… tests a deployed copy instead of the local ./dist build
+const { server, url } = flags.url ? { server: { close() {} }, url: flags.url } : await serve('dist');
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: Number(flags.dpr || 1) });
 const problems = [];
@@ -61,6 +62,25 @@ if (flags.zoom) {
   for (let i = 0; i < Number(flags.zoom); i++) { await page.mouse.wheel(0, -240); await page.waitForTimeout(60); }
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(out, '3-zoom.png') });
+}
+if (flags.pick) {
+  // select the piece under the given viewer-relative points ("x,y;x,y"), then keep only those
+  await page.click('.view-buttons button[data-view="front"]');
+  await page.waitForTimeout(300);
+  const box = await page.locator('#viewer').boundingBox();
+  for (const pt of flags.pick.split(';')) {
+    const [fx, fy] = pt.split(',').map(Number);
+    await page.mouse.click(box.x + box.width * fx, box.y + box.height * fy);
+    await page.waitForTimeout(250);
+  }
+  await page.screenshot({ path: join(out, '4-picked.png') });
+  console.log('selection:', await page.textContent('#part-title'));
+  await page.click('#part-keep');
+  await page.waitForSelector('#dl-stl[disabled]', { timeout: 5000 }).catch(() => {});
+  await page.waitForSelector('#dl-stl:not([disabled])', { timeout: 300000 });
+  await page.click('.view-buttons button[data-view="front"]');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: join(out, '5-kept.png') });
 }
 const result = {
   files: files.length,

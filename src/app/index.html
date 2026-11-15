@@ -76,15 +76,16 @@
           <button data-view="iso" title="Three-quarter view">3D</button>
         </div>
         <div id="quality-badge" class="quality-badge" hidden>Quick preview — refining…</div>
-        <div id="viewer-hint" class="viewer-hint">Drag to rotate · scroll to zoom · right-drag to pan · click a bone to remove or isolate it</div>
+        <div id="viewer-hint" class="viewer-hint">Drag to rotate · scroll to zoom · right-drag to pan · click bones to select them, then remove or keep only those</div>
         <div id="progress" class="progress" hidden>
           <div class="bar"><div id="progress-bar" class="bar-fill"></div></div>
           <span id="progress-label">Working…</span>
         </div>
         <div id="part-menu" class="part-menu" hidden>
-          <div id="part-title" class="part-title">Part</div>
-          <button id="part-remove" class="btn small">Remove this piece</button>
-          <button id="part-keep" class="btn small">Keep only this piece</button>
+          <span id="part-title" class="part-title">Selected</span>
+          <button id="part-remove" class="btn small">Remove it</button>
+          <button id="part-keep" class="btn small">Keep only this</button>
+          <button id="part-clear" class="btn small ghost" title="Clear selection (Esc)">✕</button>
         </div>
         <div id="viewer-error" class="alert error overlay" hidden></div>
       </div>
@@ -164,6 +165,7 @@
         </label>
         <details class="advanced">
           <summary>Advanced</summary>
+          <label class="check"><input id="tidy" type="checkbox" checked><span><b>Remove vessels, wires and strays</b><small>Contrast-filled vessels, splints, skin-marker wires, and far-off fragments no peg can reach</small></span></label>
           <label class="field">
             <span class="field-label">Peg thickness <output id="peg-out" class="value-inline"></output></span>
             <input id="peg" type="range" min="2" max="6" step="0.5" value="3">

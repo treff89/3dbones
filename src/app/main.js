@@ -186,7 +186,7 @@ function loadSeries(id) {
   worker.postMessage({ type: 'load', seriesId: id, detail: $('detail').value, focus: true });
 }
 
-const TRACKED = ['threshold', 'smoothing', 'closeGapMm', 'fillCavities', 'separateJoints', 'minPartMm3', 'joinParts', 'pegDiameterMm', 'maxPegGapMm'];
+const TRACKED = ['threshold', 'smoothing', 'closeGapMm', 'fillCavities', 'separateJoints', 'minPartMm3', 'joinParts', 'pegDiameterMm', 'maxPegGapMm', 'dropVessels'];
 
 function onLoaded(info, keepParams) {
   const prevAuto = state.auto;
@@ -246,6 +246,7 @@ function syncControls() {
   $('fill').checked = !!p.fillCavities;
   $('join').checked = !!p.joinParts;
   $('joints').checked = !!p.separateJoints;
+  $('tidy').checked = p.dropVessels !== false;
   $('gap').value = p.closeGapMm;
   let mi = 0;
   for (let i = 0; i < MIN_PART_STEPS.length; i++) if (MIN_PART_STEPS[i] <= p.minPartMm3) mi = i;
@@ -272,8 +273,8 @@ function updateOutputs() {
   const row = $('parts-row');
   row.hidden = !nRemoved && !p.keepSeeds.length;
   $('parts-text').textContent = p.keepSeeds.length
-    ? `Showing ${p.keepSeeds.length} chosen piece${p.keepSeeds.length === 1 ? '' : 's'} only.`
-    : `${nRemoved} piece${nRemoved === 1 ? '' : 's'} removed.`;
+    ? `Showing only the ${p.keepSeeds.length === 1 ? 'piece' : `${p.keepSeeds.length} pieces`} you chose${nRemoved ? ` (${nRemoved} removed)` : ''}.`
+    : `${nRemoved} piece${nRemoved === 1 ? '' : 's'} removed by you.`;
   $('peg').disabled = $('peggap').disabled = !p.joinParts;
 }
 
@@ -284,6 +285,8 @@ function readControls() {
   p.fillCavities = $('fill').checked;
   p.joinParts = $('join').checked;
   p.separateJoints = $('joints').checked;
+  p.dropVessels = $('tidy').checked;
+  p.dropStrays = $('tidy').checked;
   p.closeGapMm = Number($('gap').value);
   p.minPartMm3 = MIN_PART_STEPS[Number($('minpart').value)] ?? 25;
   p.pegDiameterMm = Number($('peg').value);
@@ -353,6 +356,7 @@ function onMesh(m) {
   const { version, quality } = state.pending;
   $('progress').hidden = true;
   const mesh = m.mesh;
+  clearSelection(); // piece ids belong to the previous mesh
   state.mesh = { parts: mesh.parts, pegs: mesh.pegs, stats: mesh.stats, quality, offset: mesh.offset };
   if (!mesh.indices.length) {
     viewer.clear();
@@ -399,6 +403,8 @@ function renderStats() {
   add('Pieces', String(s.parts) + (m.pegs && m.pegs.length ? ` · ${m.pegs.length} peg${m.pegs.length === 1 ? '' : 's'}` : ''));
   add('Triangles', fmt(s.triangles));
   if (m.quality === 'final') add('Mesh', s.watertight ? 'watertight ✓' : 'needs repair in slicer', s.watertight ? 'good' : 'bad');
+  const tidied = (s.vesselsDropped || 0) + (s.strayDropped || 0);
+  if (tidied) add('Auto-removed', `${tidied} vessel / wire / stray piece${tidied === 1 ? '' : 's'}`);
   if (s.unconnectedParts > 0 && state.params.joinParts) {
     add('', `${s.unconnectedParts} piece${s.unconnectedParts === 1 ? '' : 's'} too far apart to peg — click to remove, or raise “Longest peg”`, 'bad');
   }
@@ -547,32 +553,39 @@ function drawHistogram() {
 }
 
 // ───────────────────────── part picking ─────────────────────────
-let picked = null;
+// Click toggles a piece in the selection; the action bar then removes the selection or keeps only it.
+const selected = new Map(); // part id -> part (of the mesh currently shown)
+function clearSelection() {
+  selected.clear();
+  $('part-menu').hidden = true;
+  if (viewer) viewer.setHighlight([]);
+}
 function onPick(hit) {
-  const menu = $('part-menu');
-  if (!hit || !state.mesh) { menu.hidden = true; viewer.setHighlight(-1); picked = null; return; }
+  if (!hit || !state.mesh) { clearSelection(); return; }
   const part = state.mesh.parts.find((p) => p.id === hit.partId);
-  if (!part) { menu.hidden = true; viewer.setHighlight(-1); picked = null; return; }
-  picked = part;
-  viewer.setHighlight(part.id);
-  $('part-title').textContent = `Piece ${part.id} of ${state.mesh.parts.length} · ${fmt(part.volumeMm3 / 1000, part.volumeMm3 < 10000 ? 2 : 1)} cm³`;
-  $('part-keep').hidden = state.mesh.parts.length < 2;
-  menu.hidden = false;
-  const host = $('viewer').getBoundingClientRect();
-  const x = Math.min(hit.clientX - host.left + 10, host.width - 190);
-  const y = Math.min(hit.clientY - host.top + 10, host.height - 110);
-  menu.style.left = `${Math.max(8, x)}px`;
-  menu.style.top = `${Math.max(8, y)}px`;
+  if (!part) return; // a peg, or nothing
+  if (selected.has(part.id)) selected.delete(part.id); else selected.set(part.id, part);
+  if (!selected.size) { clearSelection(); return; }
+  viewer.setHighlight(selected.keys());
+  let vol = 0;
+  for (const p of selected.values()) vol += p.volumeMm3;
+  const n = selected.size;
+  $('part-title').textContent = `${n} of ${state.mesh.parts.length} piece${state.mesh.parts.length === 1 ? '' : 's'} selected · ${fmt(vol / 1000, vol < 10000 ? 2 : 1)} cm³`;
+  $('part-remove').textContent = n === 1 ? 'Remove it' : `Remove these ${n}`;
+  $('part-keep').textContent = n === 1 ? 'Keep only this' : `Keep only these ${n}`;
+  $('part-keep').hidden = state.mesh.parts.length <= n;
+  $('part-remove').hidden = state.mesh.parts.length <= n;
+  $('part-menu').hidden = false;
 }
 
 function applyPick(kind) {
-  if (!picked) return;
+  if (!selected.size) return;
   const p = state.params;
+  const seeds = [...selected.values()].map((q) => q.seed);
   state.history.push({ removeSeeds: p.removeSeeds, keepSeeds: p.keepSeeds });
-  if (kind === 'remove') p.removeSeeds = [...p.removeSeeds, picked.seed];
-  else p.keepSeeds = [picked.seed];
-  $('part-menu').hidden = true;
-  picked = null;
+  if (kind === 'remove') p.removeSeeds = [...p.removeSeeds, ...seeds];
+  else p.keepSeeds = seeds;
+  clearSelection();
   changed({ immediate: true });
 }
 
@@ -675,7 +688,7 @@ function init() {
   for (const id of ['threshold', 'smoothing', 'gap', 'minpart', 'peg', 'peggap', 'crop-x0', 'crop-x1', 'crop-y0', 'crop-y1', 'crop-z0', 'crop-z1']) {
     $(id).addEventListener('input', () => { if (state.params) { readControls(); changed(); } });
   }
-  for (const id of ['fill', 'join', 'joints']) {
+  for (const id of ['fill', 'join', 'joints', 'tidy']) {
     $(id).addEventListener('change', () => { if (state.params) { readControls(); changed({ immediate: true }); } });
   }
   $('btn-auto').addEventListener('click', () => {
@@ -700,7 +713,8 @@ function init() {
   });
   $('part-remove').addEventListener('click', () => applyPick('remove'));
   $('part-keep').addEventListener('click', () => applyPick('keep'));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') onPick(null); });
+  $('part-clear').addEventListener('click', clearSelection);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') clearSelection(); });
 
   for (const b of document.querySelectorAll('.view-buttons button')) b.addEventListener('click', () => viewer && viewer.setView(b.dataset.view));
   for (const b of document.querySelectorAll('.seg button')) b.addEventListener('click', () => state.info && setSliceAxis(Number(b.dataset.axis)));

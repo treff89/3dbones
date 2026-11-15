@@ -18,7 +18,8 @@ export function defaultParams(work, analysis) {
     separateJoints: true,
     minPartMm3: 25,
     strongMarginHU: 100,
-    dropVessels: true, vesselDensityRatio: 0.35, vesselElongation: 8,
+    dropVessels: true, vesselDensityRatio: 0.35, vesselElongation: 8, wireDiameterMm: 3.2, wireElongation: 12,
+    dropStrays: true, strayGroupRatio: 0.08, // with joinParts: small groups that no peg can reach are left out
     joinParts: true, pegDiameterMm: 3, maxPegGapMm: 20,
     removeSeeds: [], keepSeeds: [],
     crop: null,
@@ -75,7 +76,7 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
   for (let c = 1; c <= nComp; c++) eligible[c] = cc.size[c] >= minVox && cc.strong[c] >= 8 ? 1 : 0;
   // 3b. contrast-filled vessels: long, thin AND much fainter than the bone in this scan. (Thin alone would catch a
   // fibula or a rib, faint alone a child's ossification centre; a vessel is both.)
-  const dense = new Float32Array(nComp + 1), elong = new Float32Array(nComp + 1);
+  const dense = new Float32Array(nComp + 1), elong = new Float32Array(nComp + 1), thick = new Float32Array(nComp + 1);
   let vesselsDropped = 0;
   {
     const cand = [];
@@ -103,12 +104,17 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
         const L = Math.hypot(cc.bbox[6 * c + 3] - cc.bbox[6 * c] + 1, cc.bbox[6 * c + 4] - cc.bbox[6 * c + 1] + 1, cc.bbox[6 * c + 5] - cc.bbox[6 * c + 2] + 1) * work.voxel;
         const dEff = Math.sqrt((4 * cc.size[c] * voxVol) / (Math.PI * L));
         elong[c] = L / Math.max(dEff, 1e-3);
+        thick[c] = dEff;
         if (cc.size[c] > refSize) { refSize = cc.size[c]; ref = dense[c]; }
       }
       if (p.dropVessels !== false && cand.length > 1) {
         const cut = thr + p.vesselDensityRatio * (ref - thr);
         for (const c of cand) {
-          if (cc.size[c] !== refSize && dense[c] < cut && elong[c] >= p.vesselElongation) { eligible[c] = 0; vesselsDropped++; }
+          if (cc.size[c] === refSize) continue;
+          const faintAndLong = dense[c] < cut && elong[c] >= p.vesselElongation;
+          // wires, skin-marker lines, catheters, ECG leads: thinner than any bone and very long, whatever their density
+          const wire = elong[c] >= p.wireElongation && thick[c] < p.wireDiameterMm;
+          if (faintAndLong || wire) { eligible[c] = 0; vesselsDropped++; }
         }
       }
     }
@@ -153,11 +159,30 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
   }
 
   // 5. pegs
-  let pegs = [], unconnected = 0;
+  let pegs = [], unconnected = 0, strayDropped = 0;
+  const stray = new Uint8Array(nParts + 1);
   if (p.joinParts && nParts >= 2) {
     await progress(0.45, 'Planning connectors');
     const pl = planPegs(labels, dims, work, nParts, pv, { pegDiameterMm: p.pegDiameterMm, maxPegGapMm: p.maxPegGapMm });
     pegs = pl.pegs; unconnected = pl.unconnected;
+    // Groups of parts held together by pegs. Small groups that could not be reached (stray fragments, marker pads,
+    // a sliver of another bone at the edge of the scan) would print as loose crumbs: leave them out.
+    if (p.dropStrays !== false && unconnected > 0) {
+      const par = new Int32Array(nParts + 1);
+      for (let l = 0; l <= nParts; l++) par[l] = l;
+      const find = (a) => { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; };
+      for (const g of pegs) { const a = find(g.a), b = find(g.b); if (a !== b) par[b] = a; }
+      const gv = new Float64Array(nParts + 1);
+      for (let l = 1; l <= nParts; l++) gv[find(l)] += pv[l];
+      let main = 0;
+      for (let l = 1; l <= nParts; l++) if (gv[l] > main) main = gv[l];
+      unconnected = 0;
+      for (let l = 1; l <= nParts; l++) {
+        const v = gv[find(l)];
+        if (v < p.strayGroupRatio * main) { stray[l] = 1; strayDropped++; } else if (v < main) unconnected++;
+      }
+      if (strayDropped) pegs = pegs.filter((g) => !stray[g.a] && !stray[g.b]);
+    }
     lap('pegs');
   } else if (nParts >= 2) unconnected = nParts - 1;
 
@@ -166,7 +191,8 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
   const F = S === work.hu ? new Int16Array(N) : S; // reuse blurred buffer
   for (let i = 0; i < N; i++) {
     let f = S[i] - thr;
-    if (labels[i] > 0) { if (f <= 0) f = PLATEAU; }
+    const l = labels[i];
+    if (l > 0 && !stray[l]) { if (f <= 0) f = PLATEAU; }
     else if (f >= 0) f = -PLATEAU;
     F[i] = f > 32767 ? 32767 : f < -32767 ? -32767 : f;
   }
@@ -237,6 +263,7 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
   }
   const parts = [];
   for (let l = 1; l <= nParts; l++) {
+    if (stray[l]) continue;
     const n = pv[l] || 1;
     const ci = psx[l] / n, cj = psy[l] / n, ck = psz[l] / n;
     const cw = [0, 1, 2].map((q) => work.origin[q] + ci * sX[q] + cj * sY[q] + ck * sZ[q] - offset[q]);
@@ -260,7 +287,7 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
       triangles: st.triangles, vertices: st.vertices, trianglesBeforeDecimation,
       volumeMm3: st.volumeMm3, areaMm2: st.areaMm2, sizeMm: st.sizeMm, watertight: st.watertight,
       nonManifoldEdges: st.nonManifoldEdges, boundaryEdges: st.boundaryEdges,
-      parts: nParts, droppedIslands, vesselsDropped, unconnectedParts: unconnected,
+      parts: nParts - strayDropped, droppedIslands, vesselsDropped, strayDropped, unconnectedParts: unconnected,
       filledVoxels: sol.filled, jointGapVoxels: sol.jointVoxels,
       decimationErrorMm: dec.errorMm, decimationFailed: !!dec.failed,
       timingsMs: timings,

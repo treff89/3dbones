@@ -1,7 +1,10 @@
 // prepareVolume: ROI detection + isotropic resampling (axes stay parallel to the source index axes).
 import { det3, len3, worldToIndex } from './affine.js';
+import { focusVolume } from './focus.js';
 
-const DEFAULTS = { voxelSize: null, maxVoxels: 20e6, roiThresholdHU: 200, marginMm: 3, crop: null };
+// focus: true  = keep only the main bone group (see focus.js); false = whole scan (the couch is still removed);
+// focusResult  = a precomputed focusVolume() result to reuse (e.g. for a second grid at another resolution).
+const DEFAULTS = { voxelSize: null, maxVoxels: 20e6, roiThresholdHU: 200, marginMm: 3, crop: null, focus: true, focusResult: null };
 
 /**
  * Find the bounding box (source index space) of bone-like content.
@@ -123,7 +126,16 @@ export function prepareVolume(volume, opts = {}) {
   const o = { ...DEFAULTS, ...opts };
   const [nx, ny, nz] = volume.dims;
   const sp = [len3(volume.stepX), len3(volume.stepY), len3(volume.stepZ)];
-  const roi = findROI(volume, o.roiThresholdHU, o.marginMm);
+  const foc = o.focusResult || focusVolume(volume, { focus: o.focus });
+  let roi;
+  if (foc.active) {
+    roi = { min: [0, 0, 0], max: [0, 0, 0], found: true };
+    for (let a = 0; a < 3; a++) {
+      const pad = Math.ceil(o.marginMm / sp[a]);
+      roi.min[a] = Math.max(0, foc.roi.min[a] - pad);
+      roi.max[a] = Math.min(volume.dims[a] - 1, foc.roi.max[a] + pad);
+    }
+  } else roi = findROI(volume, o.roiThresholdHU, o.marginMm);
   if (o.crop) {
     const cb = cropToIndexBox(volume, o.crop);
     for (let a = 0; a < 3; a++) {
@@ -195,6 +207,27 @@ export function prepareVolume(volume, opts = {}) {
     }
   }
 
+  // Everything outside the focus region (couch, other body regions) becomes air.
+  if (foc.active) {
+    const [ccx, ccy, ccz] = foc.cdims;
+    const cellOf = (w, a, n, cn) => {
+      const lut = new Int32Array(n);
+      for (let k = 0; k < n; k++) {
+        const src = Math.min(volume.dims[a] - 1, Math.max(0, Math.round(w.c0 + k * w.r)));
+        lut[k] = Math.min(cn - 1, (src / foc.cs[a]) | 0);
+      }
+      return lut;
+    };
+    const lx = cellOf(wx, 0, mx, ccx), ly = cellOf(wy, 1, my, ccy), lz = cellOf(wz, 2, mz, ccz);
+    const keep = foc.keep;
+    for (let k = 0, q = 0; k < mz; k++) {
+      for (let j = 0; j < my; j++) {
+        const cb = ccx * (ly[j] + ccy * lz[k]);
+        for (let i = 0; i < mx; i++, q++) if (!keep[cb + lx[i]]) hu[q] = -1024;
+      }
+    }
+  }
+
   const sc = (v, a) => v.map((c) => (c * voxel) / sp[a]);
   const stepX = sc(volume.stepX, 0), stepY = sc(volume.stepY, 1), stepZ = sc(volume.stepZ, 2);
   const c0 = [wx.c0, wy.c0, wz.c0];
@@ -204,6 +237,7 @@ export function prepareVolume(volume, opts = {}) {
     handedness: det3(stepX, stepY, stepZ) < 0 ? -1 : 1,
     roi: { min: roi.min.slice(), max: roi.max.slice() },
     roiFound: roi.found,
+    focus: { active: foc.active, groups: foc.groups, hiddenGroups: foc.hiddenGroups, hiddenShare: foc.hiddenShare, tableRemoved: foc.tableRemoved, reason: foc.reason },
     source: { dims: [nx, ny, nz], spacing: volume.spacing ? volume.spacing.slice() : sp },
   };
 }

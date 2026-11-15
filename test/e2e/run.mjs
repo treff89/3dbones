@@ -2,10 +2,13 @@
 // wait for the automatic model, download STL + 3MF and take screenshots.
 //   node test/e2e/run.mjs <dicom-dir-or-zip> [out-dir] [--detail=standard] [--no-download]
 // (Not part of `npm test`: needs Playwright + a CT series, which are not committed.)
-import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { serve } from './serve.mjs';
+
+// Playwright is expected to be installed globally (or in NODE_PATH); it is not a dependency of this repo.
+const { chromium } = createRequire(import.meta.url)('playwright');
 
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const flags = Object.fromEntries(process.argv.slice(2).filter((a) => a.startsWith('--')).map((a) => a.slice(2).split('=')));
@@ -50,6 +53,14 @@ for (const v of ['iso', 'back', 'top']) {
   await page.click(`.view-buttons button[data-view="${v}"]`);
   await page.waitForTimeout(250);
   await page.screenshot({ path: join(out, `2-${v}.png`) });
+}
+if (flags.zoom) {
+  // close-up for judging surface quality
+  const box = await page.locator('#viewer').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * Number(flags.zoomY || 0.5));
+  for (let i = 0; i < Number(flags.zoom); i++) { await page.mouse.wheel(0, -240); await page.waitForTimeout(60); }
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(out, '3-zoom.png') });
 }
 const result = {
   files: files.length,

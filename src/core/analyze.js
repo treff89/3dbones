@@ -6,9 +6,12 @@ export const ANALYZE_PARAMS = {
   softWindow: [-20, 130],   // soft-tissue peak search window
   smoothSigmaHU: 4,         // Gaussian smoothing of the 1-HU histogram for peak finding
   minPeakFraction: 0.04,    // fraction of (> minHU) voxels within P±2σ needed to call it a soft-tissue peak
-  noiseK: 5, noiseMinOffset: 110,
+  // Threshold = soft-tissue peak + boneOffset, raised only if image noise would still speckle after the pre-blur.
+  // Noisy scans (thin slices, sharp kernels) get MORE SMOOTHING rather than a higher threshold, because a high
+  // threshold eats thin cortex while smoothing only costs sub-voxel detail the printer cannot reproduce anyway.
+  boneOffset: 175, softPeakClamp: [0, 90], noiseK: 5, targetSigma: 32, blurRange: [0.4, 1.0],
   otsuMax: 1600,
-  clamp: [150, 350],
+  clamp: [150, 400],
   noSoftOtsuRange: [-300, 1600], noSoftClamp: [100, 400],
   fallback: 226,
   metalHU: 2500, metalFraction: 0.0002,
@@ -95,12 +98,19 @@ export function analyze(work, P = ANALYZE_PARAMS) {
   if (haveSoft) {
     const Pk = base + pk;
     result.softPeak = Pk; result.softSigma = Math.round(sigma * 10) / 10;
-    const tNoise = Pk + Math.max(P.noiseMinOffset, P.noiseK * sigma);
+    // Gaussian pre-blur (sigma in voxels) needed to bring the noise down to targetSigma; white-noise reduction of a
+    // 3D Gaussian is about (2*sqrt(pi)*sigma)^1.5.
+    const blur = clamp(Math.pow(Math.max(sigma / P.targetSigma, 1e-3), 2 / 3) / 3.545, P.blurRange[0], P.blurRange[1]);
+    const sigmaAfter = sigma / Math.max(1, Math.pow(3.545 * blur, 1.5));
+    result.smoothing = Math.round(blur * 20) / 20;
+    result.noiseAfterSmoothing = Math.round(sigmaAfter * 10) / 10;
+    const tBase = clamp(Pk, P.softPeakClamp[0], P.softPeakClamp[1]) + P.boneOffset;
+    const tNoise = Math.max(tBase, Pk + P.noiseK * sigmaAfter);
     const tOtsu = otsu(h, Pk, P.otsuMax, base);
     result.otsu = tOtsu == null ? null : Math.round(tOtsu);
     const raw = tOtsu == null ? tNoise : Math.min(tNoise, tOtsu);
     thr = round5(clamp(raw, P.clamp[0], P.clamp[1]));
-    notes.push(`soft-tissue peak ${Pk} HU (sigma ${result.softSigma}); noise threshold ${Math.round(tNoise)}, Otsu ${result.otsu}`);
+    notes.push(`soft-tissue peak ${Pk} HU (sigma ${result.softSigma}, ${result.noiseAfterSmoothing} after smoothing ${result.smoothing}); threshold ${Math.round(tNoise)}, Otsu ${result.otsu}`);
     if (raw !== clamp(raw, P.clamp[0], P.clamp[1])) notes.push(`threshold clamped to [${P.clamp}]`);
   } else {
     const tOtsu = otsu(h, P.noSoftOtsuRange[0], P.noSoftOtsuRange[1], base);

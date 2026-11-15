@@ -429,11 +429,11 @@
    "orientation": "axial"
   },
   "missing_slice": {
-   "expected": "base",
+   "expected": "missing",
    "dims": [
     20,
     16,
-    10
+    11
    ],
    "origin": [
     -50.0,
@@ -455,7 +455,7 @@
     0,
     1.25
    ],
-   "files": 9
+   "files": 10
   },
   "multiphase": {
    "expected": "base",
@@ -492,6 +492,9 @@
     16,
     10
    ]
+  },
+  "unsupported_jpeg": {
+   "unsupported": "JPEG Baseline"
   },
   "enhanced": {
    "expected": "base",
@@ -531,7 +534,7 @@
    ],
    "sliceSpacing": 0.6,
    "pickSeriesNumber": 3,
-   "rejectedCount": 4,
+   "rejectedCount": 3,
    "skippedFiles": 3,
    "descriptorsCleaned": 2,
    "burnedInRisk": 1
@@ -569,6 +572,7 @@
  "expected": {
   "base": "expected_base.bin",
   "signed": "expected_signed.bin",
+  "missing": "expected_missing.bin",
   "mixed_thin": "expected_mixed_thin.bin"
  }
 }

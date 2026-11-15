@@ -29,6 +29,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'dicom')
 UID_ROOT = '1.2.826.0.1.3680043.8.498.'
 random.seed(1234)
+_uid_counter = [0]
+
+
+def uid():
+    # deterministic UIDs so regenerated fixtures are byte-identical
+    _uid_counter[0] += 1
+    return generate_uid(prefix=UID_ROOT, entropy_srcs=['3dbones-fixture', str(_uid_counter[0])])
+
 
 CT_IMAGE = '1.2.840.10008.5.1.4.1.1.2'
 ENHANCED_CT = '1.2.840.10008.5.1.4.1.1.2.1'
@@ -97,10 +105,10 @@ def add_phi(ds, study_uid, series_desc, full=True):
     ds.StudyDescription = PHI['StudyDescription']
     ds.ProtocolName = PHI['ProtocolName']
     ds.ImageComments = PHI['ImageComments']
-    ds.FrameOfReferenceUID = generate_uid(prefix=UID_ROOT)
+    ds.FrameOfReferenceUID = uid()
     ref = Dataset()
     ref.ReferencedSOPClassUID = CT_IMAGE
-    ref.ReferencedSOPInstanceUID = generate_uid(prefix=UID_ROOT)
+    ref.ReferencedSOPInstanceUID = uid()
     ds.ReferencedImageSequence = Sequence([ref])
     req = Dataset()
     req.RequestedProcedureID = PHI['RequestedProcedureID']
@@ -117,7 +125,7 @@ def make_ct(stored, *, study_uid, series_uid, series_number, instance, desc, ipp
     ds = Dataset()
     meta = FileMetaDataset()
     meta.MediaStorageSOPClassUID = CT_IMAGE
-    sop = generate_uid(prefix=UID_ROOT)
+    sop = uid()
     meta.MediaStorageSOPInstanceUID = sop
     meta.TransferSyntaxUID = ts
     meta.ImplementationClassUID = UID_ROOT + '1'
@@ -177,7 +185,7 @@ def save(ds, path, ts=None):
         ds.save_as(path, little_endian=False, implicit_vr=False, enforce_file_format=True)
     elif ts == RLELossless:
         ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-        ds.compress(ts)
+        ds.compress(ts, generate_instance_uid=False)
         ds.save_as(path, enforce_file_format=True)
     elif ts in ('1.2.840.10008.1.2.4.70', '1.2.840.10008.1.2.4.57', '1.2.840.10008.1.2.4.80', JPEG2000Lossless):
         ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
@@ -185,6 +193,8 @@ def save(ds, path, ts=None):
         ds.save_as(tmp, enforce_file_format=True)
         gdcm_transcode(tmp, path, ts)
         os.remove(tmp)
+    elif ts == '1.2.840.10008.1.2.4.50':
+        ds.save_as(path, implicit_vr=False, little_endian=True, enforce_file_format=True)
     else:
         ds.file_meta.TransferSyntaxUID = ts
         ds.save_as(path, implicit_vr=(ts == ImplicitVRLittleEndian), little_endian=True, enforce_file_format=True)
@@ -215,6 +225,10 @@ def gdcm_transcode(src, dst, ts):
     assert chk.file_meta.TransferSyntaxUID == ts, chk.file_meta.TransferSyntaxUID
     orig = pydicom.dcmread(src).pixel_array
     assert np.array_equal(chk.pixel_array, orig), 'transcode not lossless for ' + ts
+    # gdcm stamps today's StudyDate/Time into files without them; make output deterministic
+    chk.StudyDate = PHI['StudyDate']
+    chk.StudyTime = '101112'
+    chk.save_as(dst, enforce_file_format=True)
 
 
 def rand_name():
@@ -234,8 +248,8 @@ def axial_series(case, ts, *, hu=None, stored_fn=None, signed=False, bits_stored
                  padding=None, desc='BONE 1.25', reverse=False, names='seq', folder=None, expected='base', extra=None,
                  iop=(1, 0, 0, 0, 1, 0), ipp_fn=None, skip=(), kernel='BONE', no_ipp=False, nx=NX, ny=NY, nz=NZ,
                  ps=PS, dz=DZ, series_number=2, study_uid=None, image_type=None, full_phi=False):
-    study_uid = study_uid or generate_uid(prefix=UID_ROOT)
-    series_uid = generate_uid(prefix=UID_ROOT)
+    study_uid = study_uid or uid()
+    series_uid = uid()
     hu = base_hu(nx, ny, nz) if hu is None else hu
     d = os.path.join(OUT, folder or case)
     for k in range(nz):
@@ -332,12 +346,14 @@ def main():
                                         'stepX': list(row * PS[1]), 'stepY': list(col * PS[0]),
                                         'stepZ': [0, 0, DZ], 'tiltDeg': 15, 'orientation': 'axial'}
 
-    axial_series('missing_slice', ExplicitVRLittleEndian, skip=(4,))
-    manifest['cases']['missing_slice'] = {'expected': 'base', **geom_base, 'files': NZ - 1}
+    # 11 slice positions, slice 4 missing -> 10 files; loader must interpolate slice 4 (pattern is linear in z)
+    manifest['expected']['missing'] = write_expected('missing', base_hu(NX, NY, NZ + 1))
+    axial_series('missing_slice', ExplicitVRLittleEndian, skip=(4,), nz=NZ + 1)
+    manifest['cases']['missing_slice'] = {'expected': 'missing', **geom_base, 'dims': [NX, NY, NZ + 1], 'files': NZ}
 
     # multi-phase: acquisition 1 (base) + acquisition 2 at the same positions (different values) + 1 exact duplicate
-    study = generate_uid(prefix=UID_ROOT)
-    series_uid = generate_uid(prefix=UID_ROOT)
+    study = uid()
+    series_uid = uid()
     dd = os.path.join(OUT, 'multiphase')
     inst = 1
     for acq, offset in ((1, 0), (2, 300)):
@@ -355,6 +371,15 @@ def main():
 
     axial_series('no_ipp', ExplicitVRLittleEndian, no_ipp=True)
     manifest['cases']['no_ipp'] = {'expected': 'base', 'dims': [NX, NY, NZ]}
+
+    # ---- unsupported compression (lossy JPEG baseline; payload is a dummy, it must never be decoded) ----
+    def as_baseline(ds, k):
+        from pydicom.encaps import encapsulate
+        ds.PixelData = encapsulate([b'\xff\xd8\xff\xd9' + bytes(12)])
+        ds['PixelData'].VR = 'OB'
+        ds.file_meta.TransferSyntaxUID = '1.2.840.10008.1.2.4.50'
+    axial_series('unsupported_jpeg', '1.2.840.10008.1.2.4.50', extra=as_baseline)
+    manifest['cases']['unsupported_jpeg'] = {'unsupported': 'JPEG Baseline'}
 
     # ---- enhanced multi-frame CT (one file, NZ frames) ----
     make_enhanced(base)
@@ -376,7 +401,7 @@ def make_enhanced(base):
     ds = Dataset()
     meta = FileMetaDataset()
     meta.MediaStorageSOPClassUID = ENHANCED_CT
-    sop = generate_uid(prefix=UID_ROOT)
+    sop = uid()
     meta.MediaStorageSOPInstanceUID = sop
     meta.TransferSyntaxUID = ExplicitVRLittleEndian
     ds.file_meta = meta
@@ -384,9 +409,9 @@ def make_enhanced(base):
     ds.SOPInstanceUID = sop
     ds.Modality = 'CT'
     ds.ImageType = ['ORIGINAL', 'PRIMARY', 'VOLUME', 'NONE']
-    study = generate_uid(prefix=UID_ROOT)
+    study = uid()
     add_phi(ds, study, 'ENHANCED BONE')
-    ds.SeriesInstanceUID = generate_uid(prefix=UID_ROOT)
+    ds.SeriesInstanceUID = uid()
     ds.SeriesNumber = 7
     ds.InstanceNumber = 1
     ds.Rows, ds.Columns = NY, NX
@@ -438,7 +463,7 @@ def make_enhanced(base):
 
 def make_mixed():
     folder = 'DOE_JANE_1970/CT_WRIST_MRN1234567'
-    study = generate_uid(prefix=UID_ROOT)
+    study = uid()
     nx, ny = 16, 12
     common = dict(folder=folder, names='random', study_uid=study, nx=nx, ny=ny)
     # thin bone (should be picked): 24 slices 0.6 mm, description contains the patient's name -> must be blanked
@@ -467,7 +492,7 @@ def make_mixed():
     ds = Dataset()
     meta = FileMetaDataset()
     meta.MediaStorageSOPClassUID = SECONDARY_CAPTURE
-    sop = generate_uid(prefix=UID_ROOT)
+    sop = uid()
     meta.MediaStorageSOPInstanceUID = sop
     meta.TransferSyntaxUID = ExplicitVRLittleEndian
     ds.file_meta = meta
@@ -476,7 +501,7 @@ def make_mixed():
     ds.Modality = 'OT'
     ds.ImageType = ['DERIVED', 'SECONDARY']
     add_phi(ds, study, 'DOSE REPORT')
-    ds.SeriesInstanceUID = generate_uid(prefix=UID_ROOT)
+    ds.SeriesInstanceUID = uid()
     ds.SeriesNumber = 999
     ds.InstanceNumber = 1
     ds.Rows, ds.Columns = 8, 8
@@ -501,8 +526,14 @@ def make_mixed():
         f.write(open(src, 'rb').read()[:300])
     manifest['cases']['mixed'] = {'folder': 'DOE_JANE_1970', 'expected': 'mixed_thin',
                                   'dims': [nx, ny, 16], 'sliceSpacing': 0.6, 'pickSeriesNumber': 3,
-                                  'rejectedCount': 4, 'skippedFiles': 3, 'descriptorsCleaned': 2,
+                                  'rejectedCount': 3, 'skippedFiles': 3, 'descriptorsCleaned': 2,
                                   'burnedInRisk': 1}
+
+
+def _zi(name, method=zipfile.ZIP_DEFLATED):
+    zi = zipfile.ZipInfo(name, date_time=(2024, 3, 5, 10, 11, 12))
+    zi.compress_type = method
+    return zi
 
 
 def make_zip():
@@ -516,16 +547,18 @@ def make_zip():
     os.makedirs(os.path.dirname(zp), exist_ok=True)
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, 'w', zipfile.ZIP_DEFLATED) as iz:
-        iz.writestr('readme.txt', 'nested junk')
+        iz.writestr(_zi('readme.txt'), 'nested junk')
     files = sorted(os.listdir(os.path.join(tmpd, 'ser')))
     with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as z:
         for i, f in enumerate(files):
             sub = 'A' if i % 2 else 'B'
             method = zipfile.ZIP_STORED if i % 3 == 0 else zipfile.ZIP_DEFLATED
-            z.write(os.path.join(tmpd, 'ser', f), f'DOE_JANE/{sub}/{f}', compress_type=method)
-        z.writestr('DOE_JANE/DICOMDIR_notes.txt', 'junk')
-        z.writestr('__MACOSX/DOE_JANE/._x', b'\x00\x05\x16\x07junk')
-        z.writestr('DOE_JANE/nested.zip', inner.getvalue())
+            zi = zipfile.ZipInfo(f'DOE_JANE/{sub}/{f}', date_time=(2024, 3, 5, 10, 11, 12))
+            zi.compress_type = method
+            z.writestr(zi, open(os.path.join(tmpd, 'ser', f), 'rb').read())
+        z.writestr(_zi('DOE_JANE/DICOMDIR_notes.txt'), 'junk')
+        z.writestr(_zi('__MACOSX/DOE_JANE/._x'), b'\x00\x05\x16\x07junk')
+        z.writestr(_zi('DOE_JANE/nested.zip'), inner.getvalue())
     shutil.rmtree(tmpd)
     manifest['cases']['zipped'] = {'expected': 'base', 'ts': '1.2.840.10008.1.2.4.80', **{
         'dims': [NX, NY, NZ], 'origin': ORIGIN, 'stepX': [PS[1], 0, 0], 'stepY': [0, PS[0], 0], 'stepZ': [0, 0, DZ]}}

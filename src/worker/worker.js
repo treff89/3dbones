@@ -2,7 +2,7 @@
 // Protocol (main → worker):
 //   {type:'scan', files: File[]}                    → {type:'scanned', result}
 //   {type:'load', seriesId, detail}                 → {type:'loaded', info}
-//   {type:'detail', detail}                         → {type:'loaded', info}   (re-prepare at another resolution)
+//   {type:'prepare', detail?, focus?}               → {type:'loaded', info}   (re-prepare: other resolution / focus on-off)
 //   {type:'mesh', jobId, params, quality}           → {type:'mesh', jobId, quality, mesh} | {type:'cancelled', jobId}
 //   {type:'slice', reqId, axis, index}              → {type:'slice', reqId, axis, index, width, height, data}
 //   {type:'export', format, scale, reqId}           → {type:'exported', reqId, format, bytes}
@@ -10,14 +10,14 @@
 // Worker → main also: {type:'progress', scope, fraction, label}, {type:'error', scope, message}
 import { StudyLoader } from '../dicom/index.js';
 import { setWasmBinaries } from '../dicom/codecs.js';
-import { prepareVolume, analyze, defaultParams, buildMesh, exportSTL, export3MF } from '../core/index.js';
+import { prepareVolume, focusVolume, analyze, defaultParams, buildMesh, exportSTL, export3MF } from '../core/index.js';
 import charlsWasm from '@cornerstonejs/codec-charls/decodewasm';
 import openjpegWasm from '@cornerstonejs/codec-openjpeg/decodewasm';
 
 setWasmBinaries({ charls: charlsWasm, openjpeg: openjpegWasm });
 
 // Detail presets: voxel budget for the working grid and triangle budget for the exported mesh.
-export const DETAIL = {
+const DETAIL = {
   draft: { maxVoxels: 3e6, maxTriangles: 200000 },
   standard: { maxVoxels: 14e6, maxTriangles: 500000 },
   fine: { maxVoxels: 30e6, maxTriangles: 1000000 },
@@ -32,6 +32,7 @@ let draft = null; // coarse working grid for interactive previews
 let analysis = null;
 let lastFinal = null; // last final-quality mesh (kept for export)
 let detail = 'standard';
+let focusOn = true; // keep only the main bone group (see core/focus.js)
 let latestJob = 0;
 let running = false;
 let queued = null;
@@ -59,16 +60,18 @@ async function scan(files) {
 
 function prepare() {
   const preset = DETAIL[detail] || DETAIL.standard;
-  work = prepareVolume(volume, { maxVoxels: preset.maxVoxels });
+  const focusResult = focusVolume(volume, { focus: focusOn });
+  work = prepareVolume(volume, { maxVoxels: preset.maxVoxels, focusResult });
   // Draft grid: twice the voxel size (≈ 8× fewer voxels) for near-instant slider feedback.
   const dv = Math.min(1.5, Math.max(work.voxel * 2, 0.5));
-  draft = dv > work.voxel * 1.3 ? prepareVolume(volume, { voxelSize: dv }) : null;
+  draft = dv > work.voxel * 1.3 ? prepareVolume(volume, { voxelSize: dv, focusResult }) : null;
   analysis = analyze(work);
   const params = defaultParams(work, analysis);
   params.maxTriangles = preset.maxTriangles;
   lastFinal = null;
   return {
     detail,
+    focus: { on: focusOn, ...work.focus },
     dims: work.dims,
     voxel: work.voxel,
     draftVoxel: draft ? draft.voxel : null,
@@ -106,8 +109,9 @@ function worldBox(w) {
   return { min, max };
 }
 
-async function load(seriesId, det) {
+async function load(seriesId, det, focus) {
   if (det) detail = det;
+  if (typeof focus === 'boolean') focusOn = focus;
   volume = work = draft = analysis = lastFinal = null;
   progress('load', 0, 'Decoding slices…');
   volume = await loader.buildVolume(seriesId, (p) => progress('load', 0.9 * (p.total ? p.done / p.total : 0), 'Decoding slices…'));
@@ -222,12 +226,13 @@ self.onmessage = async (e) => {
         break;
       case 'load':
         latestJob = -1;
-        await load(m.seriesId, m.detail);
+        await load(m.seriesId, m.detail, m.focus);
         break;
-      case 'detail':
+      case 'prepare':
         if (!volume) break;
         latestJob = -1;
-        detail = m.detail;
+        if (m.detail) detail = m.detail;
+        if (typeof m.focus === 'boolean') focusOn = m.focus;
         progress('load', 0.5, 'Resampling…');
         await tick();
         post({ type: 'loaded', info: prepare(), keepParams: true });

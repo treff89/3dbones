@@ -148,9 +148,11 @@ function edtPassStrided(a, n, stride, lineStarts, scratch) {
  * `codes` is a Uint8Array; sources are voxels whose code is in `srcSet` (a 256-entry Uint8Array lookup).
  * Result written to `out` (Float32Array, length N). Sources get 0. Voxels with no source: >= 1e20.
  */
-export function edtSquared(codes, srcLUT, dims, out) {
+export function edtSquared(codes, srcLUT, dims, out, cap = Infinity) {
   const [nx, ny, nz] = dims;
   const plane = nx * ny;
+  const bounded = cap <= 12;
+  const capI = bounded ? Math.ceil(cap) : Infinity;
   // x pass: two scans per row
   for (let r = 0, nr = ny * nz; r < nr; r++) {
     const b = r * nx;
@@ -166,10 +168,11 @@ export function edtSquared(codes, srcLUT, dims, out) {
         const dl = out[b + x];
         const dr = last < 0 ? INF : last - x;
         const m = dl < dr ? dl : dr;
-        out[b + x] = m >= INF ? INF : m * m;
+        out[b + x] = m > capI ? INF : m * m;
       }
     }
   }
+  if (bounded) { boundedPasses(out, dims, capI); return out; }
   const maxN = Math.max(ny, nz);
   const scratch = {
     buf: new Float32Array(BLK * maxN), out: new Float32Array(BLK * maxN),
@@ -193,6 +196,62 @@ export function edtSquared(codes, srcLUT, dims, out) {
   return out;
 }
 
+/**
+ * y and z passes of a distance transform that is exact for distances <= cap (voxels) and INF beyond:
+ * d2(q) = min_{|t|<=cap} f(q+t) + t^2 along each axis. Contiguous row/slice operations (cache friendly).
+ */
+function boundedPasses(out, dims, cap) {
+  const [nx, ny, nz] = dims;
+  const plane = nx * ny;
+  const tmp = new Float32Array(plane);
+  // y pass, slice by slice
+  for (let z = 0; z < nz; z++) {
+    const base = z * plane;
+    tmp.set(out.subarray(base, base + plane));
+    for (let y = 0; y < ny; y++) {
+      const ob = base + y * nx;
+      for (let t = -cap; t <= cap; t++) {
+        if (t === 0) continue;
+        const yy = y + t;
+        if (yy < 0 || yy >= ny) continue;
+        const tb = yy * nx, t2 = t * t;
+        for (let x = 0; x < nx; x++) {
+          const v = tmp[tb + x] + t2;
+          if (v < out[ob + x]) out[ob + x] = v;
+        }
+      }
+    }
+  }
+  if (nz <= 1) return;
+  // z pass with a ring of original slices
+  const R = 2 * cap + 1;
+  const ring = Array.from({ length: R }, () => new Float32Array(plane));
+  const tag = new Int32Array(R).fill(-1);
+  const get = (z) => {
+    const s = z % R;
+    if (tag[s] !== z) { ring[s].set(out.subarray(z * plane, (z + 1) * plane)); tag[s] = z; }
+    return ring[s];
+  };
+  for (let z = 0; z < nz; z++) {
+    // make sure every needed slice is cached before slice z is overwritten
+    for (let t = -cap; t <= cap; t++) { const zz = z + t; if (zz >= 0 && zz < nz) get(zz); }
+    const ob = z * plane;
+    for (let t = -cap; t <= cap; t++) {
+      if (t === 0) continue;
+      const zz = z + t;
+      if (zz < 0 || zz >= nz) continue;
+      const src = ring[zz % R], t2 = t * t;
+      for (let q = 0; q < plane; q++) {
+        const v = src[q] + t2;
+        if (v < out[ob + q]) out[ob + q] = v;
+      }
+    }
+  }
+  // clamp anything beyond the cap to INF (so callers comparing to <= cap^2 stay exact)
+  const c2 = cap * cap;
+  for (let i = 0, n = out.length; i < n; i++) if (out[i] > c2) out[i] = INF;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Solidify: seal leaks (morphological closing with radius r) + fill enclosed cavities, never fusing parts.
 
@@ -204,7 +263,7 @@ function lut(...codes) { const l = new Uint8Array(256); for (const c of codes) l
  * @param labels Int32Array part labels (0 = background), modified in place (filled voxels get the part id)
  * @returns {filled, joints} counts
  */
-export function solidify(labels, dims, rVox, { fillCavities = true, separateJoints = true, nParts = 1, scratchF32 = null } = {}) {
+export function solidify(labels, dims, rVox, { fillCavities = true, separateJoints = true, sliceVote = true, nParts = 1, scratchF32 = null } = {}) {
   const [nx, ny, nz] = dims;
   const N = nx * ny * nz, plane = nx * ny;
   const st = new Uint8Array(N);
@@ -212,7 +271,7 @@ export function solidify(labels, dims, rVox, { fillCavities = true, separateJoin
   const d2 = scratchF32 && scratchF32.length >= N ? scratchF32 : new Float32Array(N);
   const r2 = rVox * rVox;
   if (rVox > 0) {
-    edtSquared(st, lut(ST_PART), dims, d2);
+    edtSquared(st, lut(ST_PART), dims, d2, rVox + 1);
     for (let i = 0; i < N; i++) if (st[i] === ST_BG && d2[i] > r2) st[i] = ST_CORE;
   } else {
     for (let i = 0; i < N; i++) if (st[i] === ST_BG) st[i] = ST_CORE;
@@ -235,8 +294,11 @@ export function solidify(labels, dims, rVox, { fillCavities = true, separateJoin
       const base = val * strideA[ax];
       sp = 0;
       const seed = (a, b) => { const i = base + a * su + b * sw; if (st[i] === ST_CORE) { st[i] = ST_REACHED; push(a + nu * b); } };
-      for (let a = 0; a < nu; a++) { seed(a, 0); seed(a, nw - 1); }
-      for (let b = 0; b < nw; b++) { seed(0, b); seed(nu - 1, b); }
+      // Perimeter voxels may already be REACHED via a neighbouring face (faces share their edges): those must still
+      // start this face's flood, otherwise the last faces processed (the z faces a limb passes through) never flood.
+      const start = (a, b) => { const i = base + a * su + b * sw; if (st[i] === ST_REACHED) push(a + nu * b); else seed(a, b); };
+      for (let a = 0; a < nu; a++) { start(a, 0); start(a, nw - 1); }
+      for (let b = 0; b < nw; b++) { start(0, b); start(nu - 1, b); }
       while (sp > 0) {
         const c = stack[--sp];
         const a = c % nu, b = (c / nu) | 0;
@@ -272,13 +334,130 @@ export function solidify(labels, dims, rVox, { fillCavities = true, separateJoin
   // outside = within r of reached; candidates = background \ outside
   let nCand = 0;
   if (rVox > 0) {
-    edtSquared(st, lut(ST_REACHED), dims, d2);
+    edtSquared(st, lut(ST_REACHED), dims, d2, rVox + 1);
     for (let i = 0; i < N; i++) {
       const s = st[i];
       if (s !== ST_PART && s !== ST_REACHED && d2[i] > r2) { st[i] = ST_CAND; nCand++; }
     }
   } else {
     for (let i = 0; i < N; i++) { const s = st[i]; if (s === ST_CORE || s === ST_BLOCKED || s === ST_BG) { st[i] = ST_CAND; nCand++; } }
+  }
+  // --- slice-wise enclosure vote. A marrow cavity usually leaks to the outside SOMEWHERE (thin metaphyseal cortex,
+  // a fracture line, a nutrient foramen wider than the seal radius), which defeats the 3D flood above and would leave
+  // long bones as hollow tubes full of trabecular sponge. But in most 2D slices through it the cavity is still
+  // ringed by cortex. A background voxel that is enclosed in 2D in at least two of the three orthogonal slice
+  // directions is interior. Surface features stay open: a fossa or a foramen is enclosed in at most one direction,
+  // a notch or groove in none. Slice borders that lie on capped volume faces (bone cut by the scan edge) are closed.
+  if (fillCavities && sliceVote) {
+    const reach = new Uint8Array(N); // bit a = reached from the slice border in slices perpendicular to axis a
+    const dimsA = [nx, ny, nz], strideA = [1, nx, plane];
+    const wall = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (st[i] === ST_PART || st[i] === ST_CAND || st[i] === ST_BLOCKED) wall[i] = 1;
+    const q2d = new Int32Array(Math.max(nx * ny, nx * nz, ny * nz) + 8);
+    // Caps: on each boundary face, whatever is ringed by bone within that face (the cut end of a canal, including
+    // the thin layer next to the cortex that the clearance test above leaves open) is closed off.
+    {
+      const seenF = new Uint8Array(Math.max(nx * ny, nx * nz, ny * nz));
+      for (let ax = 0; ax < 3; ax++) {
+        const u = ax === 0 ? 1 : 0, w = ax === 2 ? 1 : 2;
+        const nu = dimsA[u], nw = dimsA[w], su = strideA[u], sw = strideA[w];
+        for (const c of dimsA[ax] > 1 ? [0, dimsA[ax] - 1] : [0]) {
+          const base = c * strideA[ax];
+          seenF.fill(0, 0, nu * nw);
+          let top = 0;
+          const tryPush = (a, b2) => { const q = a + nu * b2; if (!seenF[q] && !wall[base + a * su + b2 * sw]) { seenF[q] = 1; q2d[top++] = q; } };
+          for (let a = 0; a < nu; a++) { tryPush(a, 0); tryPush(a, nw - 1); }
+          for (let b2 = 0; b2 < nw; b2++) { tryPush(0, b2); tryPush(nu - 1, b2); }
+          while (top > 0) {
+            const q = q2d[--top];
+            const a = q % nu, b2 = (q / nu) | 0;
+            if (a > 0) tryPush(a - 1, b2);
+            if (a < nu - 1) tryPush(a + 1, b2);
+            if (b2 > 0) tryPush(a, b2 - 1);
+            if (b2 < nw - 1) tryPush(a, b2 + 1);
+          }
+          for (let b2 = 0; b2 < nw; b2++) for (let a = 0; a < nu; a++) {
+            const i = base + a * su + b2 * sw;
+            if (!wall[i] && !seenF[a + nu * b2]) wall[i] = 2; // cap voxel
+          }
+        }
+      }
+    }
+    for (let ax = 0; ax < 3; ax++) {
+      const u = ax === 0 ? 1 : 0, w = ax === 2 ? 1 : 2;
+      const nu = dimsA[u], nw = dimsA[w], su = strideA[u], sw = strideA[w], sa = strideA[ax];
+      const bit = 1 << ax;
+      for (let c = 0; c < dimsA[ax]; c++) {
+        const base = c * sa;
+        let top = 0;
+        // seeds: the slice's border
+        for (let a = 0; a < nu; a++) {
+          let i = base + a * su;
+          if (!wall[i] && !(reach[i] & bit)) { reach[i] |= bit; q2d[top++] = a; }
+          i += (nw - 1) * sw;
+          if (!wall[i] && !(reach[i] & bit)) { reach[i] |= bit; q2d[top++] = a + nu * (nw - 1); }
+        }
+        for (let b2 = 1; b2 < nw - 1; b2++) {
+          let i = base + b2 * sw;
+          if (!wall[i] && !(reach[i] & bit)) { reach[i] |= bit; q2d[top++] = nu * b2; }
+          i += (nu - 1) * su;
+          if (!wall[i] && !(reach[i] & bit)) { reach[i] |= bit; q2d[top++] = nu - 1 + nu * b2; }
+        }
+        while (top > 0) {
+          const q = q2d[--top];
+          const a = q % nu, b2 = (q / nu) | 0;
+          const i = base + a * su + b2 * sw;
+          let j;
+          if (a > 0 && !wall[(j = i - su)] && !(reach[j] & bit)) { reach[j] |= bit; q2d[top++] = q - 1; }
+          if (a < nu - 1 && !wall[(j = i + su)] && !(reach[j] & bit)) { reach[j] |= bit; q2d[top++] = q + 1; }
+          if (b2 > 0 && !wall[(j = i - sw)] && !(reach[j] & bit)) { reach[j] |= bit; q2d[top++] = q - nu; }
+          if (b2 < nw - 1 && !wall[(j = i + sw)] && !(reach[j] & bit)) { reach[j] |= bit; q2d[top++] = q + nu; }
+        }
+      }
+    }
+    // Axis rays: is there wall both behind and ahead of the voxel along each axis? (bits 0-2 = behind, 3-5 = ahead)
+    // A canal running along an axis is ringed in the slices across it and blocked at both ends (far cortex, or the
+    // cap on the scan boundary) even when it leaks sideways somewhere along its length; a pit or fossa is ringed
+    // only in the plane parallel to the surface and its ray out of the bone is free.
+    const ray = new Uint8Array(N);
+    {
+      const seenY = new Uint8Array(nx), seenZ = new Uint8Array(plane);
+      for (let z = 0, i = 0; z < nz; z++) {
+        seenY.fill(0);
+        for (let y = 0; y < ny; y++) {
+          let seenX = 0;
+          const zo = y * nx;
+          for (let x = 0; x < nx; x++, i++) {
+            if (wall[i]) { seenX = 1; seenY[x] = 1; seenZ[zo + x] = 1; } else ray[i] = seenX | (seenY[x] << 1) | (seenZ[zo + x] << 2);
+          }
+        }
+      }
+      seenZ.fill(0);
+      for (let z = nz - 1, i = N - 1; z >= 0; z--) {
+        seenY.fill(0);
+        for (let y = ny - 1; y >= 0; y--) {
+          let seenX = 0;
+          const zo = y * nx;
+          for (let x = nx - 1; x >= 0; x--, i--) {
+            if (wall[i]) { seenX = 1; seenY[x] = 1; seenZ[zo + x] = 1; } else ray[i] |= (seenX << 3) | (seenY[x] << 4) | (seenZ[zo + x] << 5);
+          }
+        }
+      }
+    }
+    const thin = (nx < 3 ? 1 : 0) + (ny < 3 ? 1 : 0) + (nz < 3 ? 1 : 0);
+    if (!thin) {
+      for (let i = 0; i < N; i++) {
+        if (wall[i]) {
+          if (wall[i] === 2 || st[i] === ST_BLOCKED) { st[i] = ST_CAND; nCand++; }
+          continue;
+        }
+        const e = ~reach[i] & 7; // bit a set = enclosed in the slices perpendicular to axis a
+        if (!e) continue;
+        const rr = ray[i];
+        const capped = e & rr & (rr >> 3); // enclosed across axis a AND blocked both ways along a
+        if (capped || (e & (e - 1))) { st[i] = ST_CAND; nCand++; } // ... or enclosed in two slice directions
+      }
+    }
   }
   if (nCand === 0) return { filled: 0, jointVoxels: 0, regions: 0 };
 
@@ -410,4 +589,45 @@ export function solidify(labels, dims, rVox, { fillCavities = true, separateJoin
     void q2;
   }
   return { filled, jointVoxels, regions };
+}
+
+/**
+ * Final clean-up after sealing/filling: any background still completely enclosed by parts (tiny bubbles left between
+ * filled regions) is absorbed into the surrounding part, so the solid has no internal voids. Returns voxels filled.
+ */
+export function fillEnclosed(labels, dims) {
+  const [nx, ny, nz] = dims;
+  const N = nx * ny * nz, plane = nx * ny;
+  const seen = new Uint8Array(N);
+  let stack = new Int32Array(1 << 16), sp = 0;
+  const push = (i) => { if (sp >= stack.length) { const s2 = new Int32Array(stack.length * 2); s2.set(stack); stack = s2; } stack[sp++] = i; };
+  const flood = () => {
+    while (sp > 0) {
+      const i = stack[--sp];
+      const x = i % nx, t = (i / nx) | 0, y = t % ny, z = (t / ny) | 0;
+      let j;
+      if (x > 0 && !seen[(j = i - 1)] && !labels[j]) { seen[j] = 1; push(j); }
+      if (x < nx - 1 && !seen[(j = i + 1)] && !labels[j]) { seen[j] = 1; push(j); }
+      if (y > 0 && !seen[(j = i - nx)] && !labels[j]) { seen[j] = 1; push(j); }
+      if (y < ny - 1 && !seen[(j = i + nx)] && !labels[j]) { seen[j] = 1; push(j); }
+      if (z > 0 && !seen[(j = i - plane)] && !labels[j]) { seen[j] = 1; push(j); }
+      if (z < nz - 1 && !seen[(j = i + plane)] && !labels[j]) { seen[j] = 1; push(j); }
+    }
+  };
+  const seed = (i) => { if (!labels[i] && !seen[i]) { seen[i] = 1; push(i); } };
+  for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) {
+    const b = nx * (y + ny * z);
+    if (z === 0 || z === nz - 1 || y === 0 || y === ny - 1) { for (let x = 0; x < nx; x++) seed(b + x); } else { seed(b); seed(b + nx - 1); }
+  }
+  flood();
+  // whatever background was not reached is enclosed: give it the label of the bone next to it (raster order
+  // guarantees the voxel before it in x, y or z is already labelled or was itself just filled)
+  let filled = 0;
+  for (let i = 0; i < N; i++) {
+    if (labels[i] || seen[i]) continue;
+    const x = i % nx;
+    const l = (x > 0 && labels[i - 1]) || (i >= nx && labels[i - nx]) || (i >= plane && labels[i - plane]) || 0;
+    if (l) { labels[i] = l; filled++; }
+  }
+  return filled;
 }

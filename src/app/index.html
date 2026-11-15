@@ -98,6 +98,7 @@
           <span class="field-label">Series</span>
           <select id="series"></select>
         </label>
+        <label class="check"><input id="focus" type="checkbox" checked><span><b>Focus on the main bone group</b><small id="focus-note">Leaves out the CT table and partly-scanned regions such as ribs beside an arm</small></span></label>
         <div id="series-warnings" class="notes"></div>
         <details id="anon" class="anon">
           <summary><span class="ok-dot"></span><span id="anon-summary">Anonymised</span></summary>
@@ -197,9 +198,8 @@
         <div id="fit-note" class="notes"></div>
       </div>
 
-      <div class="card download">
-        <button id="dl-stl" class="btn primary big" disabled>Download STL</button>
-        <button id="dl-3mf" class="btn big" disabled>Download 3MF</button>
+      <div class="card">
+        <h2>Printing</h2>
         <p class="help">STL opens in every slicer. 3MF is smaller and carries millimetre units — Bambu Studio will say it “is not from Bambu Lab”; choose to load the geometry.</p>
         <details class="tips">
           <summary>Bambu A1 print tips</summary>
@@ -207,9 +207,14 @@
             <li>In Bambu Studio use <b>Auto orient</b> or <b>Lay on face</b>, then enable <b>tree supports (auto)</b>.</li>
             <li>0.16 mm layers and 3 walls give crisp cortical detail; 10–15 % gyroid infill is plenty.</li>
             <li>PLA is ideal. Add a brim if only a small area touches the plate.</li>
-            <li>Thin plates (scapula blade, orbital walls) print best with “Arachne” wall generator, which is the default.</li>
+            <li>Pegs (blue in the preview) hold loose bones together — snip them after printing if you want the bones separate.</li>
           </ul>
         </details>
+      </div>
+
+      <div class="download">
+        <button id="dl-stl" class="btn primary big" disabled>Download STL</button>
+        <button id="dl-3mf" class="btn big" disabled>Download 3MF</button>
       </div>
     </aside>
   </section>

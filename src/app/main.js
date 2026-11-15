@@ -182,7 +182,8 @@ function loadSeries(id) {
   if (viewer) viewer.clear();
   $('statsbar').textContent = '';
   onProgress({ scope: 'load', fraction: 0, label: 'Decoding slices…' });
-  worker.postMessage({ type: 'load', seriesId: id, detail: $('detail').value });
+  $('focus').checked = true;
+  worker.postMessage({ type: 'load', seriesId: id, detail: $('detail').value, focus: true });
 }
 
 const TRACKED = ['threshold', 'smoothing', 'closeGapMm', 'fillCavities', 'separateJoints', 'minPartMm3', 'joinParts', 'pegDiameterMm', 'maxPegGapMm'];
@@ -223,8 +224,18 @@ function renderSeriesNotes() {
   for (const w of [...((s && s.warnings) || []), ...((state.info.source.info && state.info.source.info.warnings) || [])]) {
     if (!seen.has(w)) { seen.add(w); add('⚠ ' + w); }
   }
+  const f = state.info.focus;
+  if (f) {
+    const note = $('focus-note');
+    if (f.on && f.hiddenGroups > 0) {
+      note.textContent = `Showing the main group. ${f.hiddenGroups} other bone group${f.hiddenGroups === 1 ? '' : 's'} (${Math.max(1, Math.round(f.hiddenShare * 100))} % of the bone in the scan) ${f.hiddenGroups === 1 ? 'is' : 'are'} hidden — untick to see everything.`;
+    } else if (!f.active) {
+      note.textContent = 'Whole scan shown (no soft tissue around the bone to separate regions).';
+    } else {
+      note.textContent = f.on ? 'Leaves out the CT table and partly-scanned regions such as ribs beside an arm' : 'Showing every bone in the scan' + (f.tableRemoved ? ' (CT table removed).' : '.');
+    }
+  }
   if (state.info.analysis.hasMetal) add('⚠ Metal detected — expect streak artefacts near the implant; raise the threshold or remove stray pieces if needed.');
-  for (const n of state.info.analysis.notes || []) add(n, 'info');
 }
 
 // ───────────────────────── controls ─────────────────────────
@@ -463,12 +474,28 @@ function renderSlice() {
   const px = img.data;
   const t = state.params.threshold;
   const lo = -250; const range = 1500; // display window
+  // The engine thresholds a lightly smoothed volume; do the same here (3×3 binomial per smoothing step) so the
+  // orange overlay shows what will really be picked up instead of raw image noise.
+  let field = data;
+  const passes = state.params.smoothing >= 0.75 ? 2 : state.params.smoothing >= 0.3 ? 1 : 0;
+  for (let p = 0; p < passes; p++) {
+    const src = field; const dst = new Float32Array(w * h); const tmp = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const o = y * w;
+      for (let x = 0; x < w; x++) tmp[o + x] = (src[o + (x > 0 ? x - 1 : x)] + 2 * src[o + x] + src[o + (x < w - 1 ? x + 1 : x)]) / 4;
+    }
+    for (let y = 0; y < h; y++) {
+      const o = y * w; const up = (y > 0 ? y - 1 : y) * w; const dn = (y < h - 1 ? y + 1 : y) * w;
+      for (let x = 0; x < w; x++) dst[o + x] = (tmp[up + x] + 2 * tmp[o + x] + tmp[dn + x]) / 4;
+    }
+    field = dst;
+  }
   for (let i = 0, n = w * h; i < n; i++) {
     const v = data[i];
     let g = ((v - lo) / range) * 255;
     g = g < 0 ? 0 : g > 255 ? 255 : g;
     const o = i * 4;
-    if (v >= t) { px[o] = 150 + g * 0.41; px[o + 1] = 80 + g * 0.42; px[o + 2] = 10 + g * 0.2; } else { px[o] = px[o + 1] = px[o + 2] = g * 0.85; }
+    if (field[i] >= t) { px[o] = 150 + g * 0.41; px[o + 1] = 80 + g * 0.42; px[o + 2] = 10 + g * 0.2; } else { px[o] = px[o + 1] = px[o + 2] = g * 0.85; }
     px[o + 3] = 255;
   }
   bctx.putImageData(img, 0, 0);
@@ -568,9 +595,8 @@ function download(format) {
 }
 function onExported(m) {
   setDownloadBusy(false);
-  const part = String((state.info.source.info && state.info.source.info.bodyPart) || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
   const scale = state.scale === 1 ? '' : `-${Math.round(state.scale * 100)}pct`;
-  const name = `bone-model${part ? '-' + part : ''}${scale}.${m.format}`;
+  const name = `bone-model${scale}.${m.format}`; // deliberately generic: nothing from the scan goes into the name
   const type = m.format === '3mf' ? 'model/3mf' : 'model/stl';
   const url = URL.createObjectURL(new Blob([m.bytes], { type }));
   const a = document.createElement('a');
@@ -636,7 +662,14 @@ function init() {
     if (!state.info) return;
     setDownloadsEnabled(false);
     onProgress({ scope: 'load', fraction: 0.3, label: 'Resampling…' });
-    worker.postMessage({ type: 'detail', detail: e.target.value });
+    worker.postMessage({ type: 'prepare', detail: e.target.value });
+  });
+  $('focus').addEventListener('change', (e) => {
+    if (!state.info) return;
+    setDownloadsEnabled(false);
+    state.firstMesh = true; // the model changes extent: re-frame the camera
+    onProgress({ scope: 'load', fraction: 0.3, label: 'Resampling…' });
+    worker.postMessage({ type: 'prepare', focus: e.target.checked });
   });
 
   for (const id of ['threshold', 'smoothing', 'gap', 'minpart', 'peg', 'peggap', 'crop-x0', 'crop-x1', 'crop-y0', 'crop-y1', 'crop-z0', 'crop-z1']) {

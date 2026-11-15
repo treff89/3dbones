@@ -1,0 +1,25 @@
+{
+  "name": "3dbones",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "In-browser CT DICOM to printable bone STL/3MF converter. Files are anonymised and processed locally; nothing is uploaded.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@cornerstonejs/codec-charls": "^1.2.7",
+    "@cornerstonejs/codec-openjpeg": "^1.3.6",
+    "dicom-parser": "^1.8.21",
+    "fflate": "^0.8.3",
+    "jpeg-lossless-decoder-js": "^2.1.2",
+    "meshoptimizer": "^1.3.0",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

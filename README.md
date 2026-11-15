@@ -24,7 +24,7 @@ shoulder, elbow, wrist, hand — but it works on any CT.
   numbers, all UIDs, comments, private vendor tags — is discarded and never stored, shown or logged. Series descriptions
   that contain fragments of the patient's name or ID are blanked. File and folder names are never shown or exported.
 * Images that may contain burned-in text (dose reports, screenshots, secondary captures) and scouts are skipped entirely.
-* The exported STL/3MF contains geometry only. Its file name is generic (`bone-model-<body part>.stl`).
+* The exported STL/3MF contains geometry only. Its file name is generic (`bone-model.stl`).
 * The anonymisation report in the side panel lists how many identifying fields were discarded, by category.
 
 Note that a 3D surface of a *head* CT can itself be recognisable (face). That is not a concern for limbs.
@@ -36,19 +36,28 @@ Note that a 3D surface of a *head* CT can itself be recognisable (face). That is
    of the best series (thinnest slices, most coverage, original axial, sharp kernel). Scouts, dose reports and
    reformats are ignored or ranked down. Slices are sorted by position; gantry tilt, reversed order, missing slices and
    oblique acquisitions are handled geometrically, so the model is never mirrored or sheared.
-2. **Find the bone** (`src/core/`) — the region containing bone is cropped and resampled to an isotropic working grid
-   (voxel size chosen from the anatomy size: ≈0.3 mm for a hand, ≈0.6 mm for a shoulder). The bone threshold is chosen
-   from the scan's own histogram (soft-tissue peak and noise level, Otsu), and shown as an orange overlay on the slice view.
-3. **Make it printable** — small islands and soft-tissue noise are dropped (hysteresis: a piece must contain real
-   cortical bone), pinholes in thin cortex are sealed, marrow cavities are filled so bones are **solid** (the slicer
-   decides infill), bones cut by the edge of the scan get flat caps, joint spaces are kept open, and separate bones
-   are linked by short **pegs** so the whole model prints as one piece.
-4. **Mesh** — marching cubes on the Hounsfield field itself (sub-voxel accurate, no stair-steps), Taubin smoothing
-   (no shrinkage), quadric decimation with a 0.06 mm error cap (meshoptimizer), manifold check, export.
+2. **Focus** (`src/core/focus.js`) — real limb scans are rarely just the limb. The CT couch is removed (it lies
+   outside the body), bones are grouped by proximity, and the group the scan was centred on is kept: for an arm scanned
+   at the patient's side, the humerus, radius and ulna stay and the ribs and pelvis in the same field of view are left
+   out. One checkbox shows everything again.
+3. **Find the bone** — the kept region is resampled to an isotropic working grid (voxel size chosen from the anatomy
+   size: ≈0.3 mm for a hand, ≈0.7 mm for a whole arm). The threshold comes from the scan's own histogram (soft-tissue
+   peak + 175 HU, typically 200–230 HU). Noisy thin-slice scans get more smoothing rather than a higher threshold, so
+   thin cortex is not lost. The slice view shows in orange exactly what will be printed.
+4. **Make it printable** — specks, soft-tissue noise, contrast-filled vessels, splints, skin-marker wires and stray
+   fragments are dropped; pinholes in thin cortex are sealed; marrow cavities are filled so bones are **solid** (the
+   slicer decides infill) even when the cavity leaks to the outside somewhere; bones cut by the end of the scan get
+   flat caps; joint spaces stay open; and separate bones are linked by short **pegs** so the model prints as one piece.
+5. **Mesh** — marching cubes on the Hounsfield field itself (sub-voxel accurate, no stair-steps), Taubin smoothing
+   (no shrinkage), quadric decimation with a 0.06 mm error cap (meshoptimizer), strict manifold check, export.
 
 Every step has an automatic default. The sliders (threshold, smoothing, detail, hole sealing, fragment size, pegs,
-crop, scale) are for the cases where you want something different; **click a bone in the preview to remove it or to
-keep only that bone** (e.g. to print a single scaphoid, or to drop ribs from a shoulder scan).
+crop, scale) are for when you want something different. **Click bones in the preview to select them, then remove them
+or keep only those** — e.g. print just the proximal humerus from a shoulder scan, or a single scaphoid.
+
+Tested on public, de-identified CT series from The Cancer Imaging Archive (elbow/forearm, shoulder, hip, foot, chest,
+PET/CT arms), on synthetic phantoms in every supported transfer syntax, and end-to-end in headless Chromium: a 450-slice
+elbow CT goes from dropped folder to watertight STL in about 10 seconds.
 
 ## Printing on the Bambu A1
 
@@ -76,7 +85,7 @@ src/dicom/    DICOM intake: parse, anonymise, decode, group series, assemble HU 
 src/core/     resampling, auto-threshold, clean-up morphology, pegs, marching cubes, smoothing, decimation, STL/3MF
 src/worker/   worker entry: message protocol between page and engine
 src/app/      page, styles, 3D preview (three.js), controls
-test/         unit tests; test/e2e/ has a headless-browser smoke test (needs a CT series, not committed)
+test/         unit tests; test/e2e/ (headless-browser run + STL checker) and test/manual/ need CT series, not committed
 build.mjs     esbuild bundling; the worker is inlined into app.js so the page makes no runtime requests
 ```
 
@@ -87,12 +96,19 @@ hosted on Cloudflare Pages (build command `npm run build`, output directory `dis
 ## Limits
 
 * CT only (MR has no fixed bone intensity). Lossy JPEG-compressed CT (rare) is not decoded.
+* A fixed threshold places the surface about 0.1–0.4 mm outside the true cortical edge (partial-volume effect) —
+  negligible for anatomical models, but do not use the model for implant fit without checking.
+* Bones that touch on the scan (narrow or arthritic joints, thick slices) come out as one piece; raise the threshold a
+  little, or use the crop sliders, to separate them.
+* Shoulder scans include ribs and spine, which usually fuse with the scapula at 1 mm slices: select the humerus and
+  "keep only", or crop.
 * Metal implants cause streak artefacts; raise the threshold or remove stray pieces by clicking them.
 * Very thin bone (scapular blade, osteoporotic cortex) can fall below any threshold at coarse slice spacing — use the
   thinnest series, *Fine* detail, and lower the threshold a little.
-* Contrast-filled vessels and plaster casts are as dense as bone; click them away.
+* Plaster casts are as dense as bone; click them away if the automatic tidy-up does not.
+* Needs a desktop-class browser with WebGL (Chrome, Edge, Firefox, Safari 16+). Large studies use 1–2 GB of memory.
 
 ## Licence
 
-MIT. Third-party: three.js, dicom-parser, fflate, meshoptimizer, jpeg-lossless-decoder-js, CharLS and OpenJPEG codec builds
-by Cornerstone (all MIT/BSD).
+MIT. Third-party: three.js, dicom-parser, fflate, meshoptimizer, CharLS and OpenJPEG codec builds by Cornerstone
+(all MIT/BSD).

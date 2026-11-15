@@ -189,6 +189,11 @@ function loadSeries(id) {
 const TRACKED = ['threshold', 'smoothing', 'closeGapMm', 'fillCavities', 'separateJoints', 'minPartMm3', 'joinParts', 'pegDiameterMm', 'maxPegGapMm', 'dropVessels'];
 
 function onLoaded(info, keepParams) {
+  // Detail or focus was changed while the scan was still loading: re-prepare with the current choices.
+  if (info.detail !== $('detail').value || info.focus.on !== $('focus').checked) {
+    worker.postMessage({ type: 'prepare', detail: $('detail').value, focus: $('focus').checked });
+    return;
+  }
   const prevAuto = state.auto;
   const prev = state.params;
   state.info = info;

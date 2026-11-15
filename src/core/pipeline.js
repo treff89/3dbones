@@ -19,7 +19,8 @@ export function defaultParams(work, analysis) {
     minPartMm3: 25,
     strongMarginHU: 100,
     dropVessels: true, vesselDensityRatio: 0.35, vesselElongation: 8, wireDiameterMm: 3.2, wireElongation: 12,
-    dropStrays: true, strayGroupRatio: 0.08, // with joinParts: small groups that no peg can reach are left out
+    dropStrays: true, strayGroupRatio: 0.08, // with joinParts: small groups that no peg can reach are left out,
+    strayGapMm: 6, strayMaxMm3: 1500, //        as are small bits that would hang on a peg longer than strayGapMm
     joinParts: true, pegDiameterMm: 3, maxPegGapMm: 20,
     removeSeeds: [], keepSeeds: [],
     crop: null,
@@ -182,6 +183,33 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
         if (v < p.strayGroupRatio * main) { stray[l] = 1; strayDropped++; } else if (v < main) unconnected++;
       }
       if (strayDropped) pegs = pegs.filter((g) => !stray[g.a] && !stray[g.b]);
+    }
+    // Small bits hanging on a long peg (vessel-wall calcifications, loose specks well away from any bone): cut the
+    // peg and leave the small side out. Sesamoids and fracture fragments sit within a few millimetres and stay.
+    if (p.dropStrays !== false && pegs.length) {
+      for (;;) {
+        let cutIdx = -1, cutSide = null;
+        for (let k = 0; k < pegs.length && cutIdx < 0; k++) {
+          if (pegs[k].gapMm <= p.strayGapMm) continue;
+          const par = new Int32Array(nParts + 1);
+          for (let l = 0; l <= nParts; l++) par[l] = l;
+          const find = (a) => { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; };
+          for (let j = 0; j < pegs.length; j++) if (j !== k) { const a = find(pegs[j].a), b = find(pegs[j].b); if (a !== b) par[b] = a; }
+          const ra = find(pegs[k].a), rb = find(pegs[k].b);
+          let va = 0, vb = 0;
+          for (let l = 1; l <= nParts; l++) { if (stray[l]) continue; const r = find(l); if (r === ra) va += pv[l]; else if (r === rb) vb += pv[l]; }
+          const small = Math.min(va, vb) * voxVol, big = Math.max(va, vb) * voxVol;
+          if (small < p.strayMaxMm3 && small < 0.05 * big) {
+            cutIdx = k;
+            const rs = va < vb ? ra : rb;
+            cutSide = [];
+            for (let l = 1; l <= nParts; l++) if (!stray[l] && find(l) === rs) cutSide.push(l);
+          }
+        }
+        if (cutIdx < 0) break;
+        for (const l of cutSide) { stray[l] = 1; strayDropped++; }
+        pegs = pegs.filter((g, j) => j !== cutIdx && !stray[g.a] && !stray[g.b]);
+      }
     }
     lap('pegs');
   } else if (nParts >= 2) unconnected = nParts - 1;

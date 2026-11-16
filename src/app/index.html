@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- No outgoing connections are permitted at all (connect-src 'none'): the browser itself guarantees that
      scans opened on this page cannot be sent anywhere. Everything is bundled; nothing is fetched at runtime. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src blob:; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src blob:; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="Turn a CT scan (DICOM) into a 3D-printable bone model (STL / 3MF) in your browser. Files are anonymised and processed on your own device — nothing is uploaded.">
 <meta name="theme-color" content="#0f1318">
@@ -16,7 +16,7 @@
 <body>
 <header class="top">
   <a class="brand" href="./" aria-label="3D Bones home">
-    <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><path fill="currentColor" d="M9.2 3.5a4.2 4.2 0 0 1 4.1 5.3l9.9 9.9a4.2 4.2 0 1 1 3.3 6.6 4.2 4.2 0 1 1-6.6-3.3l-9.9-9.9a4.2 4.2 0 1 1-3.3-6.6 4.2 4.2 0 0 1 2.5-2z"/></svg>
+    <svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M9.2 3.5a4.2 4.2 0 0 1 4.1 5.3l9.9 9.9a4.2 4.2 0 1 1 3.3 6.6 4.2 4.2 0 1 1-6.6-3.3l-9.9-9.9a4.2 4.2 0 1 1-3.3-6.6 4.2 4.2 0 0 1 2.5-2z"/></svg>
     <span class="brand-name">3D Bones</span>
   </a>
   <span class="tagline">CT scan → printable bone model</span>
@@ -31,36 +31,100 @@
 <main>
   <!-- ───────────── Start screen ───────────── -->
   <section id="intro">
-    <div class="hero">
-      <h1>Print the bone, straight from the CT.</h1>
-      <p class="lede">Drop a CT study and get a clean, watertight bone model sized for the Bambu&nbsp;A1.
-        Files are anonymised and converted on this device — they never leave your browser.</p>
-    </div>
+    <div class="plate">
+      <div class="plate-text">
+        <p class="eyebrow">CT to STL &amp; 3MF <span aria-hidden="true">·</span> sized for the Bambu Lab A1</p>
+        <h1>A printable bone model from a CT&nbsp;scan</h1>
+        <p class="lede">Drop in a CT study — shoulder, elbow, wrist, hand, or anything else — and get back a solid, watertight
+          model at true size, ready to slice. The work is done by this page, on this computer. The scan is not uploaded.</p>
 
-    <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a CT folder">
-      <svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M24 31V9m0 0-8 8m8-8 8 8M8 31v6a3 3 0 0 0 3 3h26a3 3 0 0 0 3-3v-6"/></svg>
-      <p class="drop-title">Drop a CT folder, DICOM files or a .zip here</p>
-      <p class="drop-sub">Or click here to choose the folder. The whole CD / export folder is fine — the right series is picked automatically.</p>
-      <div class="drop-actions">
-        <button id="btn-folder" class="btn primary">Choose folder</button>
-        <button id="btn-files" class="btn">Choose files or .zip</button>
+        <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a CT folder">
+          <i class="tick tl"></i><i class="tick tr"></i><i class="tick bl"></i><i class="tick br"></i>
+          <p class="drop-title">Drop the scan folder here</p>
+          <p class="drop-sub">The whole CD or export folder is fine; so are loose DICOM files or a .zip. The best series is chosen for you.</p>
+          <div class="drop-actions">
+            <button id="btn-folder" class="btn primary">Choose folder…</button>
+            <button id="btn-files" class="btn">Choose files or .zip…</button>
+          </div>
+          <input id="in-folder" type="file" webkitdirectory multiple hidden>
+          <input id="in-files" type="file" multiple hidden>
+        </div>
+
+        <div id="scan-status" class="scan-status" hidden>
+          <div class="bar"><div id="scan-bar" class="bar-fill"></div></div>
+          <p id="scan-label">Reading files…</p>
+        </div>
+        <div id="intro-error" class="alert error" hidden></div>
       </div>
-      <input id="in-folder" type="file" webkitdirectory multiple hidden>
-      <input id="in-files" type="file" multiple hidden>
+
+      <figure class="plate-fig">
+        <svg viewBox="0 0 400 566" role="img" aria-labelledby="fig-title fig-desc">
+          <title id="fig-title">A slice through a forearm, as scanned and as printed</title>
+          <desc id="fig-desc">Top: an axial CT slice showing soft tissue, the two forearm bones as hollow rings of cortex around marrow, a contrast-filled vessel and the scanner couch. Bottom: the same slice as printed — only the two bones, now solid.</desc>
+          <defs>
+            <pattern id="hatch" width="4.5" height="4.5" patternUnits="userSpaceOnUse" patternTransform="rotate(38)"><line x1="0" y1="0" x2="0" y2="4.5" class="h"/></pattern>
+            <pattern id="cross" width="4.5" height="4.5" patternUnits="userSpaceOnUse" patternTransform="rotate(38)"><line x1="0" y1="0" x2="0" y2="4.5" class="h"/><line x1="0" y1="0" x2="4.5" y2="0" class="h"/></pattern>
+            <pattern id="stipple" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(20)"><circle cx="1.5" cy="1.5" r=".7" class="dot"/><circle cx="5" cy="4.8" r=".6" class="dot"/></pattern>
+          </defs>
+
+          <!-- a. as scanned -->
+          <g>
+            <path class="tissue" d="M58 124C56 64 128 26 204 28c86 2 144 36 142 96-2 60-66 92-146 90C118 212 60 182 58 124Z"/>
+            <path class="cortex" fill-rule="evenodd" d="M226 106c2-22 34-32 60-22 20 8 24 36 10 54-14 14-50 12-64-4-6-8-7-18-6-28Zm20 4c2-12 20-16 34-10 10 6 10 20 2 28-10 8-28 6-34-4-3-5-3-10-2-14Z"/>
+            <path class="marrow" d="M246 110c2-12 20-16 34-10 10 6 10 20 2 28-10 8-28 6-34-4-3-5-3-10-2-14Z"/>
+            <path class="cortex" fill-rule="evenodd" d="M106 124c2-18 24-26 42-18 16 8 18 30 6 44-12 12-36 10-44-4-4-7-5-15-4-22Zm16 4c2-8 12-12 20-8 7 5 7 16 1 22-7 6-17 4-20-3-2-4-2-8-1-11Z"/>
+            <path class="marrow" d="M122 128c2-8 12-12 20-8 7 5 7 16 1 22-7 6-17 4-20-3-2-4-2-8-1-11Z"/>
+            <circle class="vessel" cx="196" cy="168" r="5.5"/>
+            <path class="couch" d="M14 236q186 30 372 0"/>
+            <path class="couch thin" d="M14 243q186 30 372 0"/>
+            <g class="lead">
+              <path d="M92 70 60 44"/><path d="M287 84 318 50"/><path d="M266 113 366 164"/><path d="M193 173 162 219"/><path d="M60 245 44 222"/>
+            </g>
+            <g class="lab">
+              <text x="6" y="38">soft tissue</text>
+              <text x="296" y="42">cortex</text>
+              <text x="398" y="181" text-anchor="end">marrow</text>
+              <text x="92" y="233">vessel with contrast</text>
+              <text x="4" y="216">couch</text>
+            </g>
+            <text class="cap" x="200" y="286" text-anchor="middle"><tspan class="capn">a.</tspan> as scanned</text>
+          </g>
+
+          <!-- b. as printed -->
+          <g transform="translate(0 292)">
+            <path class="ghost" d="M58 124C56 64 128 26 204 28c86 2 144 36 142 96-2 60-66 92-146 90C118 212 60 182 58 124Z"/>
+            <path class="solid" d="M226 106c2-22 34-32 60-22 20 8 24 36 10 54-14 14-50 12-64-4-6-8-7-18-6-28Z"/>
+            <path class="solid" d="M106 124c2-18 24-26 42-18 16 8 18 30 6 44-12 12-36 10-44-4-4-7-5-15-4-22Z"/>
+            <g class="lead"><path d="M290 132 340 212"/><path d="M118 154 96 214"/></g>
+            <g class="lab">
+              <text x="398" y="228" text-anchor="end">filled: prints solid</text>
+              <text x="20" y="230">true size, in millimetres</text>
+            </g>
+            <text class="cap" x="200" y="264" text-anchor="middle"><tspan class="capn">b.</tspan> as printed</text>
+          </g>
+        </svg>
+        <figcaption><b>Fig. 1.</b> A slice through a forearm. Soft tissue, the couch and contrast-filled vessels are left out; the cortex is kept and the marrow cavity filled.</figcaption>
+      </figure>
     </div>
 
-    <div id="scan-status" class="scan-status" hidden>
-      <div class="bar"><div id="scan-bar" class="bar-fill"></div></div>
-      <p id="scan-label">Reading files…</p>
+    <div class="notes-row">
+      <section>
+        <h2><span class="num">1</span> Identifiers are discarded</h2>
+        <p>Names, hospital numbers, dates and every other identifying tag are dropped as each file is read. Only the image geometry and pixel values are kept — in memory, until you close the tab.</p>
+      </section>
+      <section>
+        <h2><span class="num">2</span> The bone is found for you</h2>
+        <p>The page picks the thinnest series, removes the couch and whatever isn't the limb, sets the threshold from the scan itself and fills the marrow. The sliders are there if you disagree.</p>
+      </section>
+      <section>
+        <h2><span class="num">3</span> It prints in one piece</h2>
+        <p>Loose bones are joined by short pegs and cut ends are capped. Download STL or 3MF, open it in Bambu Studio, add supports, print.</p>
+      </section>
     </div>
-    <div id="intro-error" class="alert error" hidden></div>
 
-    <ol class="steps">
-      <li><b>Anonymise.</b> Names, IDs, dates and every other identifying tag are discarded as each file is read. Only the image geometry and pixel values are kept — in memory, on this device.</li>
-      <li><b>Find the bone.</b> The best series, the bone threshold, smoothing and clean-up are chosen automatically. Sliders are there if you want to adjust.</li>
-      <li><b>Print.</b> Download an STL (or 3MF) at true size in millimetres, solid and in one piece, ready for Bambu Studio.</li>
-    </ol>
-    <p class="fine">For education, surgical planning aids and patient communication. Not a medical device and not for diagnosis — always check the model against the original images.</p>
+    <p class="verify"><b>You don't have to take the privacy claim on trust.</b> This page is served with a rule that forbids it from making any network connection, and your browser enforces it. Open the developer tools, watch the Network tab, and load a scan: after the page itself has loaded, nothing else is requested.</p>
+
+    <p class="fine">For teaching, surgical planning aids and talking with patients. Not a medical device and not for diagnosis — check the model against the original images.</p>
   </section>
 
   <!-- ───────────── Workspace ───────────── -->

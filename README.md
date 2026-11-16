@@ -26,6 +26,16 @@ shoulder, elbow, wrist, hand — but it works on any CT.
 * Images that may contain burned-in text (dose reports, screenshots, secondary captures) and scouts are skipped entirely.
 * The exported STL/3MF contains geometry only. Its file name is generic (`bone-model.stl`).
 * The anonymisation report in the side panel lists how many identifying fields were discarded, by category.
+* Nothing is written to browser storage (no cookies, localStorage, IndexedDB, cache or service worker); the scan lives
+  in the tab's memory and is gone when the tab closes.
+* `test/e2e/privacy.mjs` audits a deployed copy in a real browser: it logs every network request made while a study
+  is read, converted and downloaded (after the page's own three files have loaded there are none), tries to send data
+  out from the page and from a worker by fetch, XHR, WebSocket, beacon and image (all blocked by the policy), checks
+  storage, and searches the downloaded STL/3MF for planted identifiers.
+
+What it cannot promise: GitHub, as the host, sees an ordinary page visit (IP address, browser) like any website — but
+never the scan. Browser extensions you have installed can read any page. And the model you download is still derived
+from a patient's anatomy; treat the file accordingly.
 
 Note that a 3D surface of a *head* CT can itself be recognisable (face). That is not a concern for limbs.
 

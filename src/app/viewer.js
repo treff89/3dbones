@@ -9,6 +9,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 export const BED_MM = 256; // Bambu Lab A1 build volume is 256 × 256 × 256 mm
 
 const BONE = [0.93, 0.89, 0.8];
+// Muted tints for telling separate pieces apart (bone-ish, so the model still reads as a skeleton)
+const TINTS = [
+  [0.93, 0.89, 0.80], [0.80, 0.87, 0.93], [0.95, 0.80, 0.74], [0.82, 0.92, 0.80], [0.93, 0.85, 0.62], [0.86, 0.80, 0.93],
+  [0.74, 0.90, 0.88], [0.96, 0.78, 0.86], [0.88, 0.93, 0.68], [0.78, 0.82, 0.96], [0.97, 0.83, 0.66], [0.80, 0.94, 0.74],
+];
 const PEG = [0.42, 0.66, 0.95];
 const PICK = [1.0, 0.62, 0.2];
 
@@ -20,6 +25,7 @@ export class Viewer {
     this.mesh = null;
     this.vertexPart = null;
     this.highlight = new Set(); // part ids drawn in the selection colour
+    this.tint = true; // give each separate piece its own tint
     this.firstFrame = true;
 
     const renderer = new WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
@@ -184,11 +190,16 @@ export class Viewer {
     const hl = this.highlight;
     for (let v = 0, n = arr.length / 3; v < n; v++) {
       const p = part ? part[v] : 1;
-      const c = hl.has(p) ? PICK : p === 0 ? PEG : BONE;
+      const c = hl.has(p) ? PICK : p === 0 ? PEG : this.tint ? TINTS[(p - 1) % TINTS.length] : BONE;
       arr[3 * v] = c[0]; arr[3 * v + 1] = c[1]; arr[3 * v + 2] = c[2];
     }
     colors.needsUpdate = true;
     this.requestRender();
+  }
+
+  setTint(on) {
+    this.tint = !!on;
+    this.paint();
   }
 
   setHighlight(partIds) {

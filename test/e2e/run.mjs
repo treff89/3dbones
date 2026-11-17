@@ -50,7 +50,7 @@ await page.waitForSelector('#dl-stl:not([disabled])', { timeout: 600000 });
 const tDone = Date.now();
 await page.waitForTimeout(400);
 await page.screenshot({ path: join(out, '1-front.png') });
-for (const v of ['iso', 'back', 'top']) {
+for (const v of (flags.views || 'iso,back,top').split(',')) {
   await page.click(`.view-buttons button[data-view="${v}"]`);
   await page.waitForTimeout(250);
   await page.screenshot({ path: join(out, `2-${v}.png`) });

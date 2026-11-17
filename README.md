@@ -58,7 +58,11 @@ Note that a 3D surface of a *head* CT can itself be recognisable (face). That is
    fragments are dropped; pinholes in thin cortex are sealed; marrow cavities are filled so bones are **solid** (the
    slicer decides infill) even when the cavity leaks to the outside somewhere; bones cut by the end of the scan get
    flat caps; joint spaces stay open; and separate bones are linked by short **pegs** so the model prints as one piece.
-5. **Mesh** — marching cubes on the Hounsfield field itself (sub-voxel accurate, no stair-steps), Taubin smoothing
+5. **Separate the bones** (`src/core/split.js`) — bones that touch across narrow joints (carpals, finger joints, the
+   elbow) are split along the joint line, so each bone is its own piece that can be selected, removed or kept. A cut
+   is only made where the CT shows a joint: a dark sheet between two plates of dense bone, each backed by marrow.
+   Optional **metal removal** (`src/core/metal.js`) cuts plates, screws and nails out of the model.
+6. **Mesh** — marching cubes on the Hounsfield field itself (sub-voxel accurate, no stair-steps), Taubin smoothing
    (no shrinkage), quadric decimation with a 0.06 mm error cap (meshoptimizer), strict manifold check, export.
 
 Every step has an automatic default. The sliders (threshold, smoothing, detail, hole sealing, fragment size, pegs,

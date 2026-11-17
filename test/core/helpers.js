@@ -130,3 +130,55 @@ export function multiBoneWork(n, voxel = 0.35, { noise = 20, seed = 11 } = {}) {
   }
   return { dims: [n, n, n], hu: data, voxel, origin: [-c, -c, 0], stepX: [voxel, 0, 0], stepY: [0, voxel, 0], stepZ: [0, 0, voxel], handedness: 1, roi: null, source: null };
 }
+
+// ── hand-like phantom: many small bones with thin cortex, cancellous interior and ~1 mm joint spaces ─────────
+const rbox = (x, y, z, c, h, r) => { // rounded box: centre c, half sizes h, corner radius r (signed distance)
+  const qx = Math.abs(x - c[0]) - (h[0] - r), qy = Math.abs(y - c[1]) - (h[1] - r), qz = Math.abs(z - c[2]) - (h[2] - r);
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qy, qz), 0) - r;
+};
+
+/**
+ * Bones of a schematic hand: 2 x 3 "carpals", three "metacarpals" and two "phalanges" per ray (15 bones), every
+ * neighbour separated by `gap` mm of cartilage. Returns { bones: [{c, h, r}], hu(x,y,z), bounds }.
+ */
+export function handPhantom({ gap = 1.0, cortexMm = 0.9, cortexHU = 1250, cancellousHU = 260, softHU = 50, blur = 0.45 } = {}) {
+  const bones = [];
+  const pitch = 9 + gap; // carpal blocks are 9 mm wide
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 3; col++) {
+    bones.push({ c: [(col - 1) * pitch, 0, row * (8 + gap)], h: [4.5, 4.5, 4], r: 2.2 });
+  }
+  let z0 = 8 + gap + 4 + gap; // distal edge of the second carpal row + joint
+  for (let col = 0; col < 3; col++) {
+    let z = z0;
+    for (const [w, len] of [[3.8, 30], [3.4, 18], [3.0, 12]]) {
+      bones.push({ c: [(col - 1) * pitch, 0, z + len / 2], h: [w, w, len / 2], r: Math.min(2.4, w * 0.6) });
+      z += len + gap;
+    }
+  }
+  const hu = (x, y, z) => {
+    let v = softHU;
+    for (const b of bones) {
+      const d = rbox(x, y, z, b.c, b.h, b.r);
+      if (d > 2.5) continue;
+      const outer = inside(d, blur), inner = inside(d + cortexMm, blur);
+      // trabecular texture inside
+      const tex = 70 * Math.sin(x * 2.1 + z * 0.7) * Math.sin(y * 2.3 - x * 0.5) * Math.sin(z * 1.9 + y * 0.9);
+      v += (cortexHU - softHU) * (outer - inner) + (cancellousHU + tex - softHU) * inner;
+    }
+    return v;
+  };
+  return { bones, hu, lo: [-pitch - 7.5, -7.5, -7], hi: [pitch + 7.5, 7.5, z0 + 30 + 18 + 12 + 2 * gap + 3] };
+}
+
+/** Simulate the scanner's point-spread function + image noise on a clean phantom Volume (in place). */
+export async function scannerBlur(vol, sigmaMm, noise = 0, seed = 5) {
+  const { gaussianBlurInt16 } = await import('../../src/core/morph.js');
+  const sp = vol.spacing[0];
+  let d = vol.data;
+  // gaussianBlurInt16 is meant for small sigmas; apply it in steps of <= 1 voxel (variances add)
+  let left = (sigmaMm / sp) ** 2;
+  while (left > 1e-6) { const s2 = Math.min(1, left); d = gaussianBlurInt16(d, vol.dims, Math.sqrt(s2)); left -= s2; }
+  if (noise) { const r = rng(seed); d = Int16Array.from(d, (v) => Math.round(v + noise * r.normal())); }
+  vol.data = d;
+  return vol;
+}

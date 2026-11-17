@@ -138,6 +138,7 @@
           <button data-view="right" title="View from the patient's right">Right</button>
           <button data-view="top" title="View from above">Top</button>
           <button data-view="iso" title="Three-quarter view">3D</button>
+          <button id="btn-tint" class="on" title="Give each separate bone its own tint (preview only — the print is one colour)" aria-pressed="true">Tint bones</button>
         </div>
         <div id="quality-badge" class="quality-badge" hidden>Quick preview — refining…</div>
         <div id="viewer-hint" class="viewer-hint">Drag to rotate · scroll to zoom · right-drag to pan · click bones to select them, then remove or keep only those</div>
@@ -218,6 +219,8 @@
         <h2>Make it printable</h2>
         <label class="check"><input id="fill" type="checkbox" checked><span><b>Solid bones</b><small>Fill marrow cavities so the slicer controls infill</small></span></label>
         <label class="check"><input id="join" type="checkbox" checked><span><b>Join loose bones with pegs</b><small>Short connectors (blue) so everything prints as one piece</small></span></label>
+        <label class="check"><input id="split" type="checkbox" checked><span><b>Separate individual bones</b><small>Splits bones that touch across narrow joints, so each can be selected on its own</small></span></label>
+        <label class="check"><input id="metal" type="checkbox"><span><b>Remove metal implants</b><small id="metal-note">Cuts plates, screws and nails out of the model</small></span></label>
         <label class="check"><input id="joints" type="checkbox" checked><span><b>Keep joints open</b><small>Gap sealing never fuses two separate bones</small></span></label>
         <label class="field">
           <span class="field-label">Seal holes up to <output id="gap-out" class="value-inline"></output></span>

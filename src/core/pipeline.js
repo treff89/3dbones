@@ -3,6 +3,8 @@ import { det3, worldToIndex } from './affine.js';
 import { gaussianBlurInt16, solidify, fillEnclosed } from './morph.js';
 import { labelComponents, componentAtSeed } from './components.js';
 import { planPegs, rasterPegs } from './pegs.js';
+import { splitBones } from './split.js';
+import { removeMetal } from './metal.js';
 import { marchingCubes } from './mcubes.js';
 import { taubinSmooth, meshStats, compactMesh } from './meshops.js';
 import { decimate } from './decimate.js';
@@ -19,6 +21,8 @@ export function defaultParams(work, analysis) {
     minPartMm3: 25,
     strongMarginHU: 100,
     dropVessels: true, vesselDensityRatio: 0.35, vesselElongation: 8, wireDiameterMm: 3.2, wireElongation: 12,
+    separateBones: true, // split bones that are fused across narrow joints (see split.js)
+    removeMetal: false, metalHU: 2500, metalMarginMm: 0.7, // cut implants (plates, screws) out of the model
     dropStrays: true, strayGroupRatio: 0.08, // with joinParts: small groups that no peg can reach are left out,
     strayGapMm: 6, strayMaxMm3: 1500, //        as are small bits that would hang on a peg longer than strayGapMm
     joinParts: true, pegDiameterMm: 3, maxPegGapMm: 20,
@@ -57,7 +61,13 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
   // 1. smoothing
   await progress(0.0, 'Smoothing volume');
   const sigma = Math.max(0, Math.min(1, p.smoothing)) * 1.0;
-  const S = sigma >= 0.05 ? gaussianBlurInt16(work.hu, dims, sigma) : work.hu;
+  let source = work.hu, metalVoxels = 0;
+  if (p.removeMetal) {
+    const mr = removeMetal(work.hu, dims, work.voxel, { metalHU: p.metalHU, marginMm: p.metalMarginMm });
+    source = mr.hu; metalVoxels = mr.voxels;
+    lap('metal');
+  }
+  const S = sigma >= 0.05 ? gaussianBlurInt16(source, dims, sigma) : source;
   lap('blur');
 
   // 2. mask (+ crop)
@@ -121,25 +131,30 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
     }
   }
   const toIdx = (w) => worldToIndex(work, w);
-  for (const s of p.removeSeeds || []) {
-    const c = componentAtSeed(labels, dims, toIdx(s), eligible);
-    if (c) eligible[c] = 0;
-  }
-  if (p.keepSeeds && p.keepSeeds.length) {
-    const keep = new Uint8Array(nComp + 1);
-    for (const s of p.keepSeeds) { const c = componentAtSeed(labels, dims, toIdx(s), eligible); if (c) keep[c] = 1; }
-    for (let c = 1; c <= nComp; c++) if (!keep[c]) eligible[c] = 0;
+  // Pieces the user removed / chose to keep are identified by a seed point. When bones are separated the seeds refer
+  // to the separated pieces, so they are applied after the split instead of here.
+  if (!p.separateBones) {
+    for (const s of p.removeSeeds || []) {
+      const c = componentAtSeed(labels, dims, toIdx(s), eligible);
+      if (c) eligible[c] = 0;
+    }
+    if (p.keepSeeds && p.keepSeeds.length) {
+      const keep = new Uint8Array(nComp + 1);
+      for (const s of p.keepSeeds) { const c = componentAtSeed(labels, dims, toIdx(s), eligible); if (c) keep[c] = 1; }
+      for (let c = 1; c <= nComp; c++) if (!keep[c]) eligible[c] = 0;
+    }
   }
   const surv = [];
   for (let c = 1; c <= nComp; c++) if (eligible[c]) surv.push(c);
   surv.sort((a, b) => cc.size[b] - cc.size[a] || a - b);
-  const nParts = Math.min(surv.length, 65535);
+  let nParts = Math.min(surv.length, 65535);
   const remap = new Int32Array(nComp + 1);
   for (let k = 0; k < nParts; k++) remap[surv[k]] = k + 1;
   for (let i = 0; i < N; i++) { const l = labels[i]; if (l) labels[i] = remap[l]; }
   const droppedIslands = nComp - nParts;
-  const seedIdx = new Int32Array(nParts + 1);
-  for (let k = 0; k < nParts; k++) seedIdx[k + 1] = cc.maxIdx[surv[k]];
+  let seedIdx = new Int32Array(nParts + 1);
+  let partDense = new Float32Array(nParts + 1), partElong = new Float32Array(nParts + 1);
+  for (let k = 0; k < nParts; k++) { seedIdx[k + 1] = cc.maxIdx[surv[k]]; partDense[k + 1] = dense[surv[k]]; partElong[k + 1] = elong[surv[k]]; }
   lap('components');
   if (nParts === 0) { timings.total = Math.round(performance.now() - T0); return emptyResult({ droppedIslands }, timings); }
 
@@ -151,6 +166,39 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
   scratch = null;
   if (p.fillCavities) sol.filled += fillEnclosed(labels, dims);
   lap('solidify');
+
+  // 4b. separate bones fused across joints, then apply the user's removed / kept pieces and renumber by size
+  let splitInfo = { split: 0, joints: 0 };
+  if (p.separateBones) {
+    await progress(0.38, 'Separating bones');
+    splitInfo = splitBones(labels, dims, S, thr, work.voxel);
+    const cnt = splitInfo.count;
+    const size = new Int32Array(cnt + 1), best = new Int32Array(cnt + 1).fill(-1), bestV = new Int16Array(cnt + 1).fill(-32768);
+    for (let i = 0; i < N; i++) {
+      const l = labels[i];
+      if (!l) continue;
+      size[l]++;
+      if (S[i] > bestV[l]) { bestV[l] = S[i]; best[l] = i; }
+    }
+    const ok = new Uint8Array(cnt + 1);
+    for (let l = 1; l <= cnt; l++) ok[l] = size[l] >= minVox ? 1 : 0;
+    for (const sd of p.removeSeeds || []) { const c = componentAtSeed(labels, dims, toIdx(sd), ok); if (c) ok[c] = 0; }
+    if (p.keepSeeds && p.keepSeeds.length) {
+      const keep = new Uint8Array(cnt + 1);
+      for (const sd of p.keepSeeds) { const c = componentAtSeed(labels, dims, toIdx(sd), ok); if (c) keep[c] = 1; }
+      for (let l = 1; l <= cnt; l++) if (!keep[l]) ok[l] = 0;
+    }
+    const order = [];
+    for (let l = 1; l <= cnt; l++) if (ok[l]) order.push(l);
+    order.sort((a, b) => size[b] - size[a] || a - b);
+    nParts = Math.min(order.length, 65535);
+    const map = new Int32Array(cnt + 1);
+    seedIdx = new Int32Array(nParts + 1); partDense = new Float32Array(nParts + 1); partElong = new Float32Array(nParts + 1);
+    for (let k = 0; k < nParts; k++) { map[order[k]] = k + 1; seedIdx[k + 1] = best[order[k]]; }
+    for (let i = 0; i < N; i++) { const l = labels[i]; if (l) labels[i] = map[l]; }
+    lap('split');
+    if (nParts === 0) { timings.total = Math.round(performance.now() - T0); return emptyResult({ droppedIslands }, timings); }
+  }
 
   // part statistics
   const pv = new Float64Array(nParts + 1), psx = new Float64Array(nParts + 1), psy = new Float64Array(nParts + 1), psz = new Float64Array(nParts + 1);
@@ -302,7 +350,7 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
     parts.push({
       id: l, voxels: pv[l], volumeMm3: pv[l] * voxVol,
       bboxMin: hasB ? [bmin[3 * l], bmin[3 * l + 1], bmin[3 * l + 2]] : cw, bboxMax: hasB ? [bmax[3 * l], bmax[3 * l + 1], bmax[3 * l + 2]] : cw,
-      centroid: cw, seed, denseHU: dense[surv[l - 1]], elongation: elong[surv[l - 1]],
+      centroid: cw, seed, denseHU: partDense[l], elongation: partElong[l],
     });
   }
   lap('stats');
@@ -316,6 +364,7 @@ export async function buildMesh(work, params = {}, onProgress = () => {}) {
       volumeMm3: st.volumeMm3, areaMm2: st.areaMm2, sizeMm: st.sizeMm, watertight: st.watertight,
       nonManifoldEdges: st.nonManifoldEdges, boundaryEdges: st.boundaryEdges,
       parts: nParts - strayDropped, droppedIslands, vesselsDropped, strayDropped, unconnectedParts: unconnected,
+      bonesSeparated: splitInfo.joints, metalRemovedMm3: metalVoxels * voxVol,
       filledVoxels: sol.filled, jointGapVoxels: sol.jointVoxels,
       decimationErrorMm: dec.errorMm, decimationFailed: !!dec.failed,
       timingsMs: timings,

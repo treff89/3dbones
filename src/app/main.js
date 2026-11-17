@@ -187,7 +187,7 @@ function loadSeries(id) {
   worker.postMessage({ type: 'load', seriesId: id, detail: $('detail').value, focus: true });
 }
 
-const TRACKED = ['threshold', 'smoothing', 'closeGapMm', 'fillCavities', 'separateJoints', 'minPartMm3', 'joinParts', 'pegDiameterMm', 'maxPegGapMm', 'dropVessels'];
+const TRACKED = ['threshold', 'smoothing', 'closeGapMm', 'fillCavities', 'separateJoints', 'minPartMm3', 'joinParts', 'pegDiameterMm', 'maxPegGapMm', 'dropVessels', 'separateBones', 'removeMetal'];
 
 function onLoaded(info, keepParams) {
   // Detail or focus was changed while the scan was still loading: re-prepare with the current choices.
@@ -241,7 +241,8 @@ function renderSeriesNotes() {
       note.textContent = f.on ? 'Leaves out the CT table and partly-scanned regions such as ribs beside an arm' : 'Showing every bone in the scan' + (f.tableRemoved ? ' (CT table removed).' : '.');
     }
   }
-  if (state.info.analysis.hasMetal) add('⚠ Metal detected — expect streak artefacts near the implant; raise the threshold or remove stray pieces if needed.');
+  if (state.info.analysis.hasMetal) add('⚠ Metal detected — tick “Remove metal implants” to cut it out. Expect some streak artefacts in the bone next to it.');
+  $('metal-note').textContent = state.info.analysis.hasMetal ? 'Metal was detected in this scan — tick to cut plates, screws and nails out of the model' : 'Cuts plates, screws and nails out of the model';
 }
 
 // ───────────────────────── controls ─────────────────────────
@@ -253,6 +254,8 @@ function syncControls() {
   $('join').checked = !!p.joinParts;
   $('joints').checked = !!p.separateJoints;
   $('tidy').checked = p.dropVessels !== false;
+  $('split').checked = p.separateBones !== false;
+  $('metal').checked = !!p.removeMetal;
   $('gap').value = p.closeGapMm;
   let mi = 0;
   for (let i = 0; i < MIN_PART_STEPS.length; i++) if (MIN_PART_STEPS[i] <= p.minPartMm3) mi = i;
@@ -292,6 +295,8 @@ function readControls() {
   p.joinParts = $('join').checked;
   p.separateJoints = $('joints').checked;
   p.dropVessels = $('tidy').checked;
+  p.separateBones = $('split').checked;
+  p.removeMetal = $('metal').checked;
   p.dropStrays = $('tidy').checked;
   p.closeGapMm = Number($('gap').value);
   p.minPartMm3 = MIN_PART_STEPS[Number($('minpart').value)] ?? 25;
@@ -409,6 +414,7 @@ function renderStats() {
   add('Pieces', String(s.parts) + (m.pegs && m.pegs.length ? ` · ${m.pegs.length} peg${m.pegs.length === 1 ? '' : 's'}` : ''));
   add('Triangles', fmt(s.triangles));
   if (m.quality === 'final') add('Mesh', s.watertight ? 'watertight ✓' : 'needs repair in slicer', s.watertight ? 'good' : 'bad');
+  if (s.metalRemovedMm3 > 0) add('Metal removed', fmt(s.metalRemovedMm3 / 1000, 1) + ' cm³');
   const tidied = (s.vesselsDropped || 0) + (s.strayDropped || 0);
   if (tidied) add('Auto-removed', `${tidied} vessel / wire / stray piece${tidied === 1 ? '' : 's'}`);
   if (s.unconnectedParts > 0 && state.params.joinParts) {
@@ -700,7 +706,7 @@ function init() {
   for (const id of ['threshold', 'smoothing', 'gap', 'minpart', 'peg', 'peggap', 'crop-x0', 'crop-x1', 'crop-y0', 'crop-y1', 'crop-z0', 'crop-z1']) {
     $(id).addEventListener('input', () => { if (state.params) { readControls(); changed(); } });
   }
-  for (const id of ['fill', 'join', 'joints', 'tidy']) {
+  for (const id of ['fill', 'join', 'joints', 'tidy', 'split', 'metal']) {
     $(id).addEventListener('change', () => { if (state.params) { readControls(); changed({ immediate: true }); } });
   }
   $('btn-auto').addEventListener('click', () => {
@@ -728,7 +734,13 @@ function init() {
   $('part-clear').addEventListener('click', clearSelection);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') clearSelection(); });
 
-  for (const b of document.querySelectorAll('.view-buttons button')) b.addEventListener('click', () => viewer && viewer.setView(b.dataset.view));
+  for (const b of document.querySelectorAll('.view-buttons button[data-view]')) b.addEventListener('click', () => viewer && viewer.setView(b.dataset.view));
+  $('btn-tint').addEventListener('click', (e) => {
+    const on = !e.currentTarget.classList.contains('on');
+    e.currentTarget.classList.toggle('on', on);
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+    if (viewer) viewer.setTint(on);
+  });
   for (const b of document.querySelectorAll('.seg button')) b.addEventListener('click', () => state.info && setSliceAxis(Number(b.dataset.axis)));
   $('slice-pos').addEventListener('input', requestSlice);
 

@@ -119,3 +119,20 @@ test('export3MF: zip entries, counts, millimetre unit', async () => {
   const v1 = meshStats(P, I).volumeMm3, v0 = mesh.stats.volumeMm3;
   assert.ok(Math.abs(v1 - v0) / v0 < 1e-3);
 });
+
+test('exportNRRD / importNRRD round-trip keeps voxels and geometry, and carries no header text beyond geometry', async () => {
+  const { exportNRRD, importNRRD } = await import('../../src/core/index.js');
+  const dims = [7, 5, 3];
+  const hu = new Int16Array(dims[0] * dims[1] * dims[2]);
+  for (let i = 0; i < hu.length; i++) hu[i] = ((i * 37) % 3000) - 1024;
+  const grid = { dims, hu, origin: [-12.5, 30.25, 100], stepX: [0.4, 0, 0], stepY: [0, 0.38, 0.12], stepZ: [0, -0.12, 0.38] };
+  const bytes = exportNRRD(grid);
+  const back = importNRRD(bytes);
+  assert.deepEqual(back.dims, dims);
+  assert.deepEqual(Array.from(back.data), Array.from(hu));
+  assert.deepEqual(back.origin, grid.origin);
+  assert.deepEqual(back.stepY, grid.stepY);
+  const head = new TextDecoder().decode(bytes.subarray(0, 400)).split('\n\n')[0];
+  const keys = head.split('\n').filter((l) => l && !l.startsWith('#') && !l.startsWith('NRRD')).map((l) => l.split(':')[0]);
+  assert.deepEqual(keys, ['type', 'dimension', 'space', 'sizes', 'space directions', 'kinds', 'endian', 'encoding', 'space origin']);
+});

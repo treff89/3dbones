@@ -244,6 +244,10 @@
             <div class="crop-row"><span>Front ↔ back</span><input id="crop-y0" type="range" min="0" max="100" value="0"><input id="crop-y1" type="range" min="0" max="100" value="100"></div>
             <div class="crop-row"><span>Foot ↔ head</span><input id="crop-z0" type="range" min="0" max="100" value="0"><input id="crop-z1" type="range" min="0" max="100" value="100"></div>
           </div>
+          <div class="field">
+            <button id="dl-nrrd" class="btn small">Save anonymised volume (.nrrd)</button>
+            <span class="help">The cropped CT volume as voxel values and geometry only — no DICOM headers, names, dates or IDs. Opens in 3D Slicer; useful for sharing a problem case.</span>
+          </div>
         </details>
         <div id="parts-row" class="parts-row" hidden>
           <span id="parts-text"></span>

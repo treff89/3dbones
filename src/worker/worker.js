@@ -10,7 +10,7 @@
 // Worker → main also: {type:'progress', scope, fraction, label}, {type:'error', scope, message}
 import { StudyLoader } from '../dicom/index.js';
 import { setWasmBinaries } from '../dicom/codecs.js';
-import { prepareVolume, focusVolume, analyze, defaultParams, buildMesh, exportSTL, export3MF } from '../core/index.js';
+import { prepareVolume, focusVolume, analyze, defaultParams, buildMesh, exportSTL, export3MF, exportNRRD } from '../core/index.js';
 import charlsWasm from '@cornerstonejs/codec-charls/decodewasm';
 import openjpegWasm from '@cornerstonejs/codec-openjpeg/decodewasm';
 
@@ -212,8 +212,15 @@ function slice(reqId, axis, index) {
 }
 
 function doExport(reqId, format, scale) {
-  if (!lastFinal) throw new Error('The model is still being prepared — try again in a moment.');
-  const bytes = format === '3mf' ? export3MF(lastFinal, { scale, name: 'bone' }) : exportSTL(lastFinal, { scale });
+  let bytes;
+  if (format === 'nrrd') {
+    // the anonymised working volume: voxel values + geometry, nothing from the DICOM headers
+    if (!work) throw new Error('Open a scan first.');
+    bytes = exportNRRD(work);
+  } else {
+    if (!lastFinal) throw new Error('The model is still being prepared — try again in a moment.');
+    bytes = format === '3mf' ? export3MF(lastFinal, { scale, name: 'bone' }) : exportSTL(lastFinal, { scale });
+  }
   post({ type: 'exported', reqId, format, bytes }, [bytes.buffer]);
 }
 

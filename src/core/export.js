@@ -1,5 +1,5 @@
 // Binary STL and minimal 3MF export.
-import { Zip, ZipDeflate, ZipPassThrough } from 'fflate';
+import { Zip, ZipDeflate, ZipPassThrough, gzipSync, gunzipSync } from 'fflate';
 
 export function exportSTL(mesh, { scale = 1, header = '3dbones anonymised bone model' } = {}) {
   const P = mesh.positions, I = mesh.indices;
@@ -94,4 +94,57 @@ export function export3MF(mesh, { scale = 1, name = 'bone' } = {}) {
   let o = 0;
   for (const c of chunks) { out.set(c, o); o += c.length; }
   return out;
+}
+
+/**
+ * Anonymised volume export: the working grid as a gzip-compressed NRRD file (opens in 3D Slicer, ITK-SNAP, MITK).
+ * It holds Hounsfield values and geometry ONLY - there is no DICOM header to leak: no names, dates, IDs or UIDs.
+ * @param grid { dims, hu|data: Int16Array, origin, stepX, stepY, stepZ }
+ */
+export function exportNRRD(grid, { level = 6 } = {}) {
+  const hu = grid.hu || grid.data;
+  const v = (a) => `(${a.map((x) => Number(x.toFixed(6))).join(',')})`;
+  const header = [
+    'NRRD0004',
+    '# 3D Bones anonymised CT volume: Hounsfield units and geometry only',
+    'type: short',
+    'dimension: 3',
+    'space: left-posterior-superior',
+    `sizes: ${grid.dims.join(' ')}`,
+    `space directions: ${v(grid.stepX)} ${v(grid.stepY)} ${v(grid.stepZ)}`,
+    'kinds: domain domain domain',
+    'endian: little',
+    'encoding: gzip',
+    `space origin: ${v(grid.origin)}`,
+    '', '',
+  ].join('\n');
+  const head = new TextEncoder().encode(header);
+  const raw = new Uint8Array(hu.buffer, hu.byteOffset, hu.byteLength); // typed arrays are little-endian on every browser platform
+  const body = gzipSync(raw, { level });
+  const out = new Uint8Array(head.length + body.length);
+  out.set(head, 0);
+  out.set(body, head.length);
+  return out;
+}
+
+/** Read back a file written by exportNRRD (gzip or raw encoding, short, 3D) as a Volume-like grid. */
+export function importNRRD(bytes) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let end = -1;
+  for (let i = 0; i + 1 < u8.length && i < 65536; i++) if (u8[i] === 10 && u8[i + 1] === 10) { end = i; break; }
+  if (end < 0) throw new Error('not an NRRD file');
+  const fields = {};
+  for (const line of new TextDecoder().decode(u8.subarray(0, end)).split('\n')) {
+    const m = /^([^#:][^:]*):\s*(.*)$/.exec(line);
+    if (m) fields[m[1].trim().toLowerCase()] = m[2].trim();
+  }
+  if (!/^(short|int16|signed short|short int)/.test(fields.type || '') || fields.dimension !== '3') throw new Error('only 3D 16-bit NRRD volumes are supported');
+  const dims = fields.sizes.split(/\s+/).map(Number);
+  const vecs = (fields['space directions'] || '').match(/\(([^)]*)\)/g).map((t) => t.slice(1, -1).split(',').map(Number));
+  const origin = fields['space origin'].slice(1, -1).split(',').map(Number);
+  let body = u8.subarray(end + 2);
+  if (/gz/.test(fields.encoding || 'raw')) body = gunzipSync(body);
+  const data = new Int16Array(body.buffer.slice(body.byteOffset, body.byteOffset + dims[0] * dims[1] * dims[2] * 2));
+  const [stepX, stepY, stepZ] = vecs;
+  return { dims, data, origin, stepX, stepY, stepZ, spacing: vecs.map((a) => Math.hypot(...a)) };
 }

@@ -70,6 +70,7 @@ function onError(m) {
   } else if (m.scope === 'export') {
     toast(text);
     setDownloadBusy(false);
+    $('dl-nrrd').disabled = false; $('dl-nrrd').textContent = 'Save anonymised volume (.nrrd)';
   } else {
     const el = $('viewer-error');
     el.textContent = text;
@@ -614,8 +615,10 @@ function download(format) {
 function onExported(m) {
   setDownloadBusy(false);
   const scale = state.scale === 1 ? '' : `-${Math.round(state.scale * 100)}pct`;
-  const name = `bone-model${scale}.${m.format}`; // deliberately generic: nothing from the scan goes into the name
-  const type = m.format === '3mf' ? 'model/3mf' : 'model/stl';
+  // deliberately generic names: nothing from the scan goes into them
+  const name = m.format === 'nrrd' ? 'anonymised-ct-volume.nrrd' : `bone-model${scale}.${m.format}`;
+  const type = m.format === '3mf' ? 'model/3mf' : m.format === 'nrrd' ? 'application/octet-stream' : 'model/stl';
+  if (m.format === 'nrrd') { $('dl-nrrd').disabled = false; $('dl-nrrd').textContent = 'Save anonymised volume (.nrrd)'; }
   const url = URL.createObjectURL(new Blob([m.bytes], { type }));
   const a = document.createElement('a');
   a.href = url; a.download = name;
@@ -731,6 +734,12 @@ function init() {
 
   $('scale').addEventListener('change', (e) => setScale(Number(e.target.value)));
   $('btn-fit').addEventListener('click', () => setScale(Math.floor(fitScale() * 100)));
+  $('dl-nrrd').addEventListener('click', () => {
+    if (!state.info) return;
+    $('dl-nrrd').disabled = true;
+    $('dl-nrrd').textContent = 'Compressing…';
+    worker.postMessage({ type: 'export', format: 'nrrd', reqId: Date.now() });
+  });
   $('dl-stl').addEventListener('click', () => download('stl'));
   $('dl-3mf').addEventListener('click', () => download('3mf'));
 }

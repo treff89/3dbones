@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- No outgoing connections are permitted at all (connect-src 'none'): the browser itself guarantees that
+     scans opened on this page cannot be sent anywhere. Everything is bundled; nothing is fetched at runtime. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src blob:; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Turn a CT scan (DICOM) into a 3D-printable bone model (STL / 3MF) in your browser. Files are anonymised and processed on your own device — nothing is uploaded.">
+<meta name="theme-color" content="#0f1318">
+<title>3D Bones — CT scan to printable bone model</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css?v=e8051e3650">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="./" aria-label="3D Bones home">
+    <svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M9.2 3.5a4.2 4.2 0 0 1 4.1 5.3l9.9 9.9a4.2 4.2 0 1 1 3.3 6.6 4.2 4.2 0 1 1-6.6-3.3l-9.9-9.9a4.2 4.2 0 1 1-3.3-6.6 4.2 4.2 0 0 1 2.5-2z"/></svg>
+    <span class="brand-name">3D Bones</span>
+  </a>
+  <span class="tagline">CT scan → printable bone model</span>
+  <span class="spacer"></span>
+  <span class="privacy-pill" title="This page is served with a security policy that blocks every outgoing network request. Your files are read, anonymised and converted inside this browser tab only.">
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V6H4a1.5 1.5 0 0 0-1.5 1.5v6A1.5 1.5 0 0 0 4 15h8a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 12 6h-.5V4.5A3.5 3.5 0 0 0 8 1zm2 5H6V4.5a2 2 0 1 1 4 0z"/></svg>
+    Nothing is uploaded
+  </span>
+  <button id="btn-new" class="btn ghost small" hidden>Open another scan</button>
+</header>
+
+<main>
+  <!-- ───────────── Start screen ───────────── -->
+  <section id="intro">
+    <div class="plate">
+      <div class="plate-text">
+        <p class="eyebrow">CT to STL &amp; 3MF <span aria-hidden="true">·</span> sized for the Bambu Lab A1</p>
+        <h1>A printable bone model from a CT&nbsp;scan</h1>
+        <p class="lede">Drop in a CT study — shoulder, elbow, wrist, hand, or anything else — and get back a solid, watertight
+          model at true size, ready to slice. The work is done by this page, on this computer. The scan is not uploaded.</p>
+
+        <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a CT folder">
+          <i class="tick tl"></i><i class="tick tr"></i><i class="tick bl"></i><i class="tick br"></i>
+          <p class="drop-title">Drop the scan folder here</p>
+          <p class="drop-sub">The whole CD or export folder is fine; so are loose DICOM files or a .zip. The best series is chosen for you.</p>
+          <div class="drop-actions">
+            <button id="btn-folder" class="btn primary">Choose folder…</button>
+            <button id="btn-files" class="btn">Choose files or .zip…</button>
+          </div>
+          <input id="in-folder" type="file" webkitdirectory multiple hidden>
+          <input id="in-files" type="file" multiple hidden>
+        </div>
+
+        <div id="scan-status" class="scan-status" hidden>
+          <div class="bar"><div id="scan-bar" class="bar-fill"></div></div>
+          <p id="scan-label">Reading files…</p>
+        </div>
+        <div id="intro-error" class="alert error" hidden></div>
+      </div>
+
+      <figure class="plate-fig">
+        <svg viewBox="0 0 400 566" role="img" aria-labelledby="fig-title fig-desc">
+          <title id="fig-title">A slice through a forearm, as scanned and as printed</title>
+          <desc id="fig-desc">Top: an axial CT slice showing soft tissue, the two forearm bones as hollow rings of cortex around marrow, a contrast-filled vessel and the scanner couch. Bottom: the same slice as printed — only the two bones, now solid.</desc>
+          <defs>
+            <pattern id="hatch" width="4.5" height="4.5" patternUnits="userSpaceOnUse" patternTransform="rotate(38)"><line x1="0" y1="0" x2="0" y2="4.5" class="h"/></pattern>
+            <pattern id="cross" width="4.5" height="4.5" patternUnits="userSpaceOnUse" patternTransform="rotate(38)"><line x1="0" y1="0" x2="0" y2="4.5" class="h"/><line x1="0" y1="0" x2="4.5" y2="0" class="h"/></pattern>
+            <pattern id="stipple" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(20)"><circle cx="1.5" cy="1.5" r=".7" class="dot"/><circle cx="5" cy="4.8" r=".6" class="dot"/></pattern>
+          </defs>
+
+          <!-- a. as scanned -->
+          <g>
+            <path class="tissue" d="M58 124C56 64 128 26 204 28c86 2 144 36 142 96-2 60-66 92-146 90C118 212 60 182 58 124Z"/>
+            <path class="cortex" fill-rule="evenodd" d="M226 106c2-22 34-32 60-22 20 8 24 36 10 54-14 14-50 12-64-4-6-8-7-18-6-28Zm20 4c2-12 20-16 34-10 10 6 10 20 2 28-10 8-28 6-34-4-3-5-3-10-2-14Z"/>
+            <path class="marrow" d="M246 110c2-12 20-16 34-10 10 6 10 20 2 28-10 8-28 6-34-4-3-5-3-10-2-14Z"/>
+            <path class="cortex" fill-rule="evenodd" d="M106 124c2-18 24-26 42-18 16 8 18 30 6 44-12 12-36 10-44-4-4-7-5-15-4-22Zm16 4c2-8 12-12 20-8 7 5 7 16 1 22-7 6-17 4-20-3-2-4-2-8-1-11Z"/>
+            <path class="marrow" d="M122 128c2-8 12-12 20-8 7 5 7 16 1 22-7 6-17 4-20-3-2-4-2-8-1-11Z"/>
+            <circle class="vessel" cx="196" cy="168" r="5.5"/>
+            <path class="couch" d="M14 236q186 30 372 0"/>
+            <path class="couch thin" d="M14 243q186 30 372 0"/>
+            <g class="lead">
+              <path d="M92 70 60 44"/><path d="M287 84 318 50"/><path d="M266 113 366 164"/><path d="M193 173 162 219"/><path d="M60 245 44 222"/>
+            </g>
+            <g class="lab">
+              <text x="6" y="38">soft tissue</text>
+              <text x="296" y="42">cortex</text>
+              <text x="398" y="181" text-anchor="end">marrow</text>
+              <text x="92" y="233">vessel with contrast</text>
+              <text x="4" y="216">couch</text>
+            </g>
+            <text class="cap" x="200" y="286" text-anchor="middle"><tspan class="capn">a.</tspan> as scanned</text>
+          </g>
+
+          <!-- b. as printed -->
+          <g transform="translate(0 292)">
+            <path class="ghost" d="M58 124C56 64 128 26 204 28c86 2 144 36 142 96-2 60-66 92-146 90C118 212 60 182 58 124Z"/>
+            <path class="solid" d="M226 106c2-22 34-32 60-22 20 8 24 36 10 54-14 14-50 12-64-4-6-8-7-18-6-28Z"/>
+            <path class="solid" d="M106 124c2-18 24-26 42-18 16 8 18 30 6 44-12 12-36 10-44-4-4-7-5-15-4-22Z"/>
+            <g class="lead"><path d="M290 132 340 212"/><path d="M118 154 96 214"/></g>
+            <g class="lab">
+              <text x="398" y="228" text-anchor="end">filled: prints solid</text>
+              <text x="20" y="230">true size, in millimetres</text>
+            </g>
+            <text class="cap" x="200" y="264" text-anchor="middle"><tspan class="capn">b.</tspan> as printed</text>
+          </g>
+        </svg>
+        <figcaption><b>Fig. 1.</b> A slice through a forearm. Soft tissue, the couch and contrast-filled vessels are left out; the cortex is kept and the marrow cavity filled.</figcaption>
+      </figure>
+    </div>
+
+    <div class="notes-row">
+      <section>
+        <h2><span class="num">1</span> Identifiers are discarded</h2>
+        <p>Names, hospital numbers, dates and every other identifying tag are dropped as each file is read. Only the image geometry and pixel values are kept — in memory, until you close the tab.</p>
+      </section>
+      <section>
+        <h2><span class="num">2</span> The bone is found for you</h2>
+        <p>The page picks the thinnest series, removes the couch and whatever isn't the limb, sets the threshold from the scan itself and fills the marrow. The sliders are there if you disagree.</p>
+      </section>
+      <section>
+        <h2><span class="num">3</span> It prints in one piece</h2>
+        <p>Loose bones are joined by short pegs and cut ends are capped. Download STL or 3MF, open it in Bambu Studio, add supports, print.</p>
+      </section>
+    </div>
+
+    <p class="verify"><b>You don't have to take the privacy claim on trust.</b> This page is served with a rule that forbids it from making any network connection, and your browser enforces it. Open the developer tools, watch the Network tab, and load a scan: after the page itself has loaded, nothing else is requested.</p>
+
+    <p class="fine">For teaching, surgical planning aids and talking with patients. Not a medical device and not for diagnosis — check the model against the original images.</p>
+  </section>
+
+  <!-- ───────────── Workspace ───────────── -->
+  <section id="workspace" hidden>
+    <div class="stage">
+      <div id="viewer" class="viewer">
+        <div class="view-buttons" role="group" aria-label="Camera views">
+          <button data-view="front" title="View from the front (anterior)">Front</button>
+          <button data-view="back" title="View from the back (posterior)">Back</button>
+          <button data-view="left" title="View from the patient's left">Left</button>
+          <button data-view="right" title="View from the patient's right">Right</button>
+          <button data-view="top" title="View from above">Top</button>
+          <button data-view="iso" title="Three-quarter view">3D</button>
+          <button id="btn-tint" class="on" title="Give each separate bone its own tint (preview only — the print is one colour)" aria-pressed="true">Tint bones</button>
+        </div>
+        <div id="quality-badge" class="quality-badge" hidden>Quick preview — refining…</div>
+        <div id="viewer-hint" class="viewer-hint">Drag to rotate · scroll to zoom · right-drag to pan · click bones to select them, then remove or keep only those</div>
+        <div id="progress" class="progress" hidden>
+          <div class="bar"><div id="progress-bar" class="bar-fill"></div></div>
+          <span id="progress-label">Working…</span>
+        </div>
+        <div id="part-menu" class="part-menu" hidden>
+          <span id="part-title" class="part-title">Selected</span>
+          <button id="part-remove" class="btn small">Remove it</button>
+          <button id="part-keep" class="btn small">Keep only this</button>
+          <button id="part-clear" class="btn small ghost" title="Clear selection (Esc)">✕</button>
+        </div>
+        <div id="viewer-error" class="alert error overlay" hidden></div>
+      </div>
+      <div id="statsbar" class="statsbar"></div>
+    </div>
+
+    <aside class="panel" aria-label="Model settings">
+      <div class="card" id="card-study">
+        <h2>Scan</h2>
+        <label class="field">
+          <span class="field-label">Series</span>
+          <select id="series"></select>
+        </label>
+        <label class="check"><input id="focus" type="checkbox" checked><span><b>Focus on the main bone group</b><small id="focus-note">Leaves out the CT table and partly-scanned regions such as ribs beside an arm</small></span></label>
+        <div id="series-warnings" class="notes"></div>
+        <details id="anon" class="anon">
+          <summary><span class="ok-dot"></span><span id="anon-summary">Anonymised</span></summary>
+          <div id="anon-body" class="anon-body"></div>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Bone threshold</h2>
+          <button id="btn-auto" class="chip" title="Return every setting to the automatic choice">Auto ✓</button>
+        </div>
+        <div class="slider-row">
+          <div class="hist-wrap">
+            <canvas id="hist" width="600" height="96" aria-hidden="true"></canvas>
+            <input id="threshold" type="range" min="50" max="1200" step="5" value="226" aria-label="Bone threshold in Hounsfield units">
+          </div>
+          <output id="threshold-out" class="value">226 HU</output>
+        </div>
+        <p class="help">Lower includes thinner, softer bone; higher separates touching bones. Orange in the slice below is what will be printed.</p>
+        <div class="slice-wrap">
+          <canvas id="slice" width="320" height="320" aria-label="CT slice with the selected bone highlighted"></canvas>
+          <div class="slice-controls">
+            <div class="seg" role="group" aria-label="Slice direction">
+              <button data-axis="2" class="on">Axial</button>
+              <button data-axis="1">Coronal</button>
+              <button data-axis="0">Sagittal</button>
+            </div>
+            <input id="slice-pos" type="range" min="0" max="100" value="50" aria-label="Slice position">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Surface</h2>
+        <label class="field">
+          <span class="field-label">Smoothing <output id="smoothing-out" class="value-inline"></output></span>
+          <input id="smoothing" type="range" min="0" max="100" step="5" value="40">
+        </label>
+        <label class="field">
+          <span class="field-label">Detail</span>
+          <select id="detail">
+            <option value="draft">Draft — fastest, coarse</option>
+            <option value="standard" selected>Standard — recommended</option>
+            <option value="fine">Fine — small bones, slower</option>
+          </select>
+        </label>
+        <p id="detail-note" class="help"></p>
+      </div>
+
+      <div class="card">
+        <h2>Make it printable</h2>
+        <label class="check"><input id="fill" type="checkbox" checked><span><b>Solid bones</b><small>Fill marrow cavities so the slicer controls infill</small></span></label>
+        <label class="check"><input id="join" type="checkbox" checked><span><b>Join loose bones with pegs</b><small>Short connectors (blue) so everything prints as one piece</small></span></label>
+        <label class="check"><input id="split" type="checkbox" checked><span><b>Separate individual bones</b><small>Splits bones that touch across narrow joints, so each can be selected on its own</small></span></label>
+        <label class="check"><input id="metal" type="checkbox"><span><b>Remove metal implants</b><small id="metal-note">Cuts plates, screws and nails out of the model</small></span></label>
+        <label class="check"><input id="joints" type="checkbox" checked><span><b>Keep joints open</b><small>Gap sealing never fuses two separate bones</small></span></label>
+        <label class="field">
+          <span class="field-label">Seal holes up to <output id="gap-out" class="value-inline"></output></span>
+          <input id="gap" type="range" min="0" max="3" step="0.1" value="0.6">
+        </label>
+        <label class="field">
+          <span class="field-label">Drop fragments smaller than <output id="minpart-out" class="value-inline"></output></span>
+          <input id="minpart" type="range" min="0" max="10" step="1" value="3">
+        </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="check"><input id="tidy" type="checkbox" checked><span><b>Remove vessels, wires and strays</b><small>Contrast-filled vessels, splints, skin-marker wires, and far-off fragments no peg can reach</small></span></label>
+          <label class="field">
+            <span class="field-label">Peg thickness <output id="peg-out" class="value-inline"></output></span>
+            <input id="peg" type="range" min="2" max="6" step="0.5" value="3">
+          </label>
+          <label class="field">
+            <span class="field-label">Longest peg <output id="peggap-out" class="value-inline"></output></span>
+            <input id="peggap" type="range" min="2" max="60" step="1" value="20">
+          </label>
+          <div class="crop">
+            <span class="field-label">Crop region <button id="crop-reset" class="link">reset</button></span>
+            <div class="crop-row"><span>Right ↔ left</span><input id="crop-x0" type="range" min="0" max="100" value="0"><input id="crop-x1" type="range" min="0" max="100" value="100"></div>
+            <div class="crop-row"><span>Front ↔ back</span><input id="crop-y0" type="range" min="0" max="100" value="0"><input id="crop-y1" type="range" min="0" max="100" value="100"></div>
+            <div class="crop-row"><span>Foot ↔ head</span><input id="crop-z0" type="range" min="0" max="100" value="0"><input id="crop-z1" type="range" min="0" max="100" value="100"></div>
+          </div>
+          <div class="field">
+            <button id="dl-nrrd" class="btn small">Save anonymised volume (.nrrd)</button>
+            <span class="help">The cropped CT volume as voxel values and geometry only — no DICOM headers, names, dates or IDs. Opens in 3D Slicer; useful for sharing a problem case.</span>
+          </div>
+        </details>
+        <div id="parts-row" class="parts-row" hidden>
+          <span id="parts-text"></span>
+          <button id="parts-undo" class="link">undo</button>
+          <button id="parts-reset" class="link">restore all</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Print size</h2>
+        <div class="scale-row">
+          <label class="field inline">
+            <span class="field-label">Scale</span>
+            <span class="num"><input id="scale" type="number" min="10" max="400" step="5" value="100"> %</span>
+          </label>
+          <button id="btn-fit" class="btn small" hidden>Fit to A1 plate</button>
+        </div>
+        <div id="fit-note" class="notes"></div>
+      </div>
+
+      <div class="card">
+        <h2>Printing</h2>
+        <p class="help">STL opens in every slicer. 3MF is smaller and carries millimetre units — Bambu Studio will say it “is not from Bambu Lab”; choose to load the geometry.</p>
+        <details class="tips">
+          <summary>Bambu A1 print tips</summary>
+          <ul>
+            <li>In Bambu Studio use <b>Auto orient</b> or <b>Lay on face</b>, then enable <b>tree supports (auto)</b>.</li>
+            <li>0.16 mm layers and 3 walls give crisp cortical detail; 10–15 % gyroid infill is plenty.</li>
+            <li>PLA is ideal. Add a brim if only a small area touches the plate.</li>
+            <li>Pegs (blue in the preview) hold loose bones together — snip them after printing if you want the bones separate.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="download">
+        <button id="dl-stl" class="btn primary big" disabled>Download STL</button>
+        <button id="dl-3mf" class="btn big" disabled>Download 3MF</button>
+      </div>
+    </aside>
+  </section>
+</main>
+
+<footer>
+  <span>3D Bones — open source, runs entirely in your browser.</span>
+  <a href="https://github.com/treff89/3dbones" rel="noopener">Source &amp; documentation</a>
+  <span class="fine">Not a medical device. Not for diagnostic use.</span>
+</footer>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js?v=6797f14781" defer></script>
+</body>
+</html>
